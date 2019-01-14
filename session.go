@@ -557,6 +557,16 @@ func (s *session) handlePacketImpl(p *receivedPacket) error {
 		}
 	}
 
+	// Handle SpinBit and DelaySample variations
+	if !hdr.IsLongHeader {
+		if hdr.PacketNumber == s.largestRcvdPacketNumber {
+			s.packer.HandleSpinBit(s.perspective, hdr.SpinBit)
+		}
+		if hdr.DelaySample {
+			s.packer.HandleDelaySample(s.perspective, hdr.SpinBit)
+		}
+	}
+
 	return s.handleFrames(packet.frames, hdr.PacketNumber, packet.encryptionLevel)
 }
 

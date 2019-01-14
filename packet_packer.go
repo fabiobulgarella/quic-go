@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"time"
 
@@ -22,6 +23,9 @@ type packer interface {
 
 	HandleTransportParameters(*handshake.TransportParameters)
 	ChangeDestConnectionID(protocol.ConnectionID)
+
+	HandleSpinBit(protocol.Perspective, bool)
+	HandleDelaySample(protocol.Perspective, bool)
 }
 
 type packedPacket struct {
@@ -97,6 +101,15 @@ type packetPacker struct {
 
 	maxPacketSize             protocol.ByteCount
 	numNonRetransmittableAcks int
+
+	// spin bit and delay sample related fields
+	spinBit          bool
+	prevSpinBit      bool
+	delaySample      bool
+	gotDelaySample   bool
+	skipDelaySample  bool
+	forceDelaySample bool
+	lastDelaySample  time.Time
 }
 
 var _ packer = &packetPacker{}
@@ -369,6 +382,8 @@ func (p *packetPacker) getHeader(encLevel protocol.EncryptionLevel) *wire.Extend
 	header.PacketNumberLen = pnLen
 	header.Version = p.version
 	header.DestConnectionID = p.destConnID
+	header.SpinBit = p.spinBit
+	header.DelaySample = p.delaySample
 
 	if encLevel != protocol.Encryption1RTT {
 		header.IsLongHeader = true
@@ -415,6 +430,19 @@ func (p *packetPacker) writeAndSealPacket(
 				length += frame.Length(p.version)
 			}
 			header.Length = length
+		}
+	} else if header.DelaySample {
+		// if it's a short header and delaySample is set, reset it inside packetPacker
+		p.delaySample = false
+		// check if it has to be sent (considered sendingDelay and forceDelaySample flag)
+		sendingDelay := time.Since(p.lastDelaySample)
+		if sendingDelay > time.Millisecond {
+			if !p.forceDelaySample {
+				log.Printf("MaxSendingDelay elapsed: not sending this DelaySample -> SD: %v", sendingDelay)
+				header.DelaySample = false
+			} else {
+				p.forceDelaySample = false
+			}
 		}
 	}
 
@@ -476,5 +504,47 @@ func (p *packetPacker) ChangeDestConnectionID(connID protocol.ConnectionID) {
 func (p *packetPacker) HandleTransportParameters(params *handshake.TransportParameters) {
 	if params.MaxPacketSize != 0 {
 		p.maxPacketSize = utils.MinByteCount(p.maxPacketSize, params.MaxPacketSize)
+	}
+}
+
+func (p *packetPacker) HandleSpinBit(perspective protocol.Perspective, hdrSpinBit bool) {
+	if perspective == protocol.PerspectiveClient {
+		// client -> invert spinBit
+		p.spinBit = !hdrSpinBit
+		if p.spinBit != p.prevSpinBit {
+			// got an edge
+			p.prevSpinBit = p.spinBit
+			// check if ended marking period has got its delaySample
+			if !p.gotDelaySample {
+				if p.skipDelaySample {
+					p.skipDelaySample = false
+					p.delaySample = true
+					p.forceDelaySample = true
+				} else {
+					p.skipDelaySample = true
+					//s.logger.Infof("No DelaySample found in last period: skipping next period!")
+				}
+			} else {
+				p.gotDelaySample = false
+			}
+		}
+	} else {
+		// server -> reflect spinBit
+		p.spinBit = hdrSpinBit
+	}
+}
+
+func (p *packetPacker) HandleDelaySample(perspective protocol.Perspective, hdrSpinBit bool) {
+	if perspective == protocol.PerspectiveClient {
+		if hdrSpinBit != p.spinBit {
+			// client -> reflect delaySample if next packet has the OPPOSITE spinBit
+			p.gotDelaySample = true
+			p.delaySample = true
+			p.lastDelaySample = time.Now()
+		}
+	} else if hdrSpinBit == p.spinBit {
+		// server -> reflect delaySample if next packet has the SAME spinBit
+		p.delaySample = true
+		p.lastDelaySample = time.Now()
 	}
 }

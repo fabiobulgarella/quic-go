@@ -21,6 +21,10 @@ type ExtendedHeader struct {
 	PacketNumber    protocol.PacketNumber
 
 	KeyPhase int
+
+	// spin bit and delay sample related fields
+	SpinBit     bool
+	DelaySample bool
 }
 
 func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (*ExtendedHeader, error) {
@@ -50,10 +54,14 @@ func (h *ExtendedHeader) parseLongHeader(b *bytes.Reader, v protocol.VersionNumb
 }
 
 func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, v protocol.VersionNumber) (*ExtendedHeader, error) {
+	/*
 	if h.typeByte&0x18 != 0 {
 		return nil, errors.New("4th and 5th bit must be 0")
 	}
+	*/
 
+	h.SpinBit = h.typeByte&0x20 > 0
+	h.DelaySample = h.typeByte&0x10 > 0
 	h.KeyPhase = int(h.typeByte&0x4) >> 2
 
 	if err := h.readPacketNumber(b); err != nil {
@@ -130,6 +138,14 @@ func (h *ExtendedHeader) writeLongHeader(b *bytes.Buffer, v protocol.VersionNumb
 // TODO: add support for the key phase
 func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, v protocol.VersionNumber) error {
 	typeByte := 0x40 | uint8(h.PacketNumberLen-1)
+
+	if h.SpinBit {
+		typeByte |= byte(0x20)
+	}
+	if h.DelaySample {
+		typeByte |= byte(0x10)
+	}
+
 	typeByte |= byte(h.KeyPhase << 2)
 
 	b.WriteByte(typeByte)
