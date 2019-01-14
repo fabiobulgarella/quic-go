@@ -4,91 +4,99 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/lucas-clemente/quic-go/internal/handshake"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qerr"
+	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 )
 
 type unpackedPacket struct {
+	packetNumber    protocol.PacketNumber // the decoded packet number
+	hdr             *wire.ExtendedHeader
 	encryptionLevel protocol.EncryptionLevel
-	frames          []wire.Frame
-}
-
-type quicAEAD interface {
-	OpenInitial(dst, src []byte, pn protocol.PacketNumber, ad []byte) ([]byte, error)
-	OpenHandshake(dst, src []byte, pn protocol.PacketNumber, ad []byte) ([]byte, error)
-	Open1RTT(dst, src []byte, pn protocol.PacketNumber, ad []byte) ([]byte, error)
+	data            []byte
 }
 
 // The packetUnpacker unpacks QUIC packets.
 type packetUnpacker struct {
-	aead    quicAEAD
+	cs handshake.CryptoSetup
+
+	largestRcvdPacketNumber protocol.PacketNumber
+
 	version protocol.VersionNumber
 }
 
 var _ unpacker = &packetUnpacker{}
 
-func newPacketUnpacker(aead quicAEAD, version protocol.VersionNumber) unpacker {
+func newPacketUnpacker(cs handshake.CryptoSetup, version protocol.VersionNumber) unpacker {
 	return &packetUnpacker{
-		aead:    aead,
+		cs:      cs,
 		version: version,
 	}
 }
 
-func (u *packetUnpacker) Unpack(headerBinary []byte, hdr *wire.ExtendedHeader, data []byte) (*unpackedPacket, error) {
-	buf := *getPacketBuffer()
-	buf = buf[:0]
-	defer putPacketBuffer(&buf)
+func (u *packetUnpacker) Unpack(hdr *wire.Header, data []byte) (*unpackedPacket, error) {
+	r := bytes.NewReader(data)
 
-	var decrypted []byte
-	var encryptionLevel protocol.EncryptionLevel
-	var err error
+	var encLevel protocol.EncryptionLevel
 	switch hdr.Type {
 	case protocol.PacketTypeInitial:
-		decrypted, err = u.aead.OpenInitial(buf, data, hdr.PacketNumber, headerBinary)
-		encryptionLevel = protocol.EncryptionInitial
+		encLevel = protocol.EncryptionInitial
 	case protocol.PacketTypeHandshake:
-		decrypted, err = u.aead.OpenHandshake(buf, data, hdr.PacketNumber, headerBinary)
-		encryptionLevel = protocol.EncryptionHandshake
+		encLevel = protocol.EncryptionHandshake
 	default:
 		if hdr.IsLongHeader {
 			return nil, fmt.Errorf("unknown packet type: %s", hdr.Type)
 		}
-		decrypted, err = u.aead.Open1RTT(buf, data, hdr.PacketNumber, headerBinary)
-		encryptionLevel = protocol.Encryption1RTT
+		encLevel = protocol.Encryption1RTT
 	}
+	opener, err := u.cs.GetOpener(encLevel)
 	if err != nil {
-		return nil, qerr.Error(qerr.DecryptionFailure, err.Error())
+		return nil, err
+	}
+	hdrLen := int(hdr.ParsedLen())
+	if len(data) < hdrLen+4+16 {
+		return nil, fmt.Errorf("Packet too small. Expected at least 20 bytes after the header, got %d", len(data)-hdrLen)
+	}
+	// The packet number can be up to 4 bytes long, but we won't know the length until we decrypt it.
+	// 1. save a copy of the 4 bytes
+	origPNBytes := make([]byte, 4)
+	copy(origPNBytes, data[hdrLen:hdrLen+4])
+	// 2. decrypt the header, assuming a 4 byte packet number
+	opener.DecryptHeader(
+		data[hdrLen+4:hdrLen+4+16],
+		&data[0],
+		data[hdrLen:hdrLen+4],
+	)
+	// 3. parse the header (and learn the actual length of the packet number)
+	extHdr, err := hdr.ParseExtended(r, u.version)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing extended header: %s", err)
+	}
+	extHdrLen := hdrLen + int(extHdr.PacketNumberLen)
+	// 4. if the packet number is shorter than 4 bytes, replace the remaining bytes with the copy we saved earlier
+	if extHdr.PacketNumberLen != protocol.PacketNumberLen4 {
+		copy(data[extHdrLen:hdrLen+4], origPNBytes[int(extHdr.PacketNumberLen):])
 	}
 
-	fs, err := u.parseFrames(decrypted)
+	pn := protocol.DecodePacketNumber(
+		extHdr.PacketNumberLen,
+		u.largestRcvdPacketNumber,
+		extHdr.PacketNumber,
+	)
+
+	decrypted, err := opener.Open(data[extHdrLen:extHdrLen], data[extHdrLen:], pn, data[:extHdrLen])
 	if err != nil {
 		return nil, err
 	}
 
+	// Only do this after decrypting, so we are sure the packet is not attacker-controlled
+	u.largestRcvdPacketNumber = utils.MaxPacketNumber(u.largestRcvdPacketNumber, pn)
+
 	return &unpackedPacket{
-		encryptionLevel: encryptionLevel,
-		frames:          fs,
+		hdr:             extHdr,
+		packetNumber:    pn,
+		encryptionLevel: encLevel,
+		data:            decrypted,
 	}, nil
-}
-
-func (u *packetUnpacker) parseFrames(decrypted []byte) ([]wire.Frame, error) {
-	r := bytes.NewReader(decrypted)
-	if r.Len() == 0 {
-		return nil, qerr.MissingPayload
-	}
-
-	fs := make([]wire.Frame, 0, 2)
-	// Read all frames in the packet
-	for {
-		frame, err := wire.ParseNextFrame(r, u.version)
-		if err != nil {
-			return nil, err
-		}
-		if frame == nil {
-			break
-		}
-		fs = append(fs, frame)
-	}
-	return fs, nil
 }

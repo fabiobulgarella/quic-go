@@ -1,4 +1,4 @@
-package self
+package self_test
 
 import (
 	"crypto/tls"
@@ -8,7 +8,7 @@ import (
 	"time"
 
 	quic "github.com/lucas-clemente/quic-go"
-	"github.com/lucas-clemente/quic-go/integrationtests/tools/proxy"
+	quicproxy "github.com/lucas-clemente/quic-go/integrationtests/tools/proxy"
 	"github.com/lucas-clemente/quic-go/integrationtests/tools/testserver"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
@@ -54,7 +54,7 @@ var _ = Describe("non-zero RTT", func() {
 						close(done)
 					}()
 					serverPort := ln.Addr().(*net.UDPAddr).Port
-					proxy, err := quicproxy.NewQuicProxy("localhost:0", version, &quicproxy.Opts{
+					proxy, err := quicproxy.NewQuicProxy("localhost:0", &quicproxy.Opts{
 						RemoteAddr: fmt.Sprintf("localhost:%d", serverPort),
 						DelayPacket: func(d quicproxy.Direction, p uint64) time.Duration {
 							return rtt / 2

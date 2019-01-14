@@ -15,7 +15,6 @@ type ExtendedHeader struct {
 	Header
 
 	typeByte byte
-	Raw      []byte
 
 	PacketNumberLen protocol.PacketNumberLen
 	PacketNumber    protocol.PacketNumber
@@ -34,7 +33,7 @@ func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (*Exte
 	if err != nil {
 		return nil, err
 	}
-	if _, err := b.Seek(int64(h.len)-1, io.SeekCurrent); err != nil {
+	if _, err := b.Seek(int64(h.ParsedLen())-1, io.SeekCurrent); err != nil {
 		return nil, err
 	}
 	if h.IsLongHeader {

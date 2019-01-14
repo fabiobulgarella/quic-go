@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lucas-clemente/quic-go/internal/handshake"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
+	"github.com/lucas-clemente/quic-go/internal/qerr"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 )
@@ -43,6 +45,7 @@ type quicSession interface {
 	GetVersion() protocol.VersionNumber
 	run() error
 	destroy(error)
+	closeForRecreating() protocol.PacketNumber
 	closeRemote(error)
 }
 
@@ -87,7 +90,8 @@ type server struct {
 	errorChan   chan struct{}
 	closed      bool
 
-	sessionQueue chan Session
+	sessionQueue    chan Session
+	sessionQueueLen int32 // to be used as an atomic
 
 	sessionRunner sessionRunner
 
@@ -148,7 +152,7 @@ func listen(conn net.PacketConn, tlsConf *tls.Config, config *Config) (*server, 
 		tlsConf:        tlsConf,
 		config:         config,
 		sessionHandler: sessionHandler,
-		sessionQueue:   make(chan Session, 5),
+		sessionQueue:   make(chan Session),
 		errorChan:      make(chan struct{}),
 		newSession:     newSession,
 		logger:         utils.DefaultLogger.WithPrefix("server"),
@@ -163,9 +167,20 @@ func listen(conn net.PacketConn, tlsConf *tls.Config, config *Config) (*server, 
 
 func (s *server) setup() error {
 	s.sessionRunner = &runner{
-		onHandshakeCompleteImpl: func(sess Session) { s.sessionQueue <- sess },
-		retireConnectionIDImpl:  s.sessionHandler.Retire,
-		removeConnectionIDImpl:  s.sessionHandler.Remove,
+		onHandshakeCompleteImpl: func(sess Session) {
+			go func() {
+				atomic.AddInt32(&s.sessionQueueLen, 1)
+				defer atomic.AddInt32(&s.sessionQueueLen, -1)
+				select {
+				case s.sessionQueue <- sess:
+					// blocks until the session is accepted
+				case <-sess.Context().Done():
+					// don't pass sessions that were already closed to Accept()
+				}
+			}()
+		},
+		retireConnectionIDImpl: s.sessionHandler.Retire,
+		removeConnectionIDImpl: s.sessionHandler.Remove,
 	}
 	cookieGenerator, err := handshake.NewCookieGenerator()
 	if err != nil {
@@ -317,21 +332,27 @@ func (s *server) handlePacket(p *receivedPacket) {
 	}
 	if hdr.Type == protocol.PacketTypeInitial {
 		go s.handleInitial(p)
+		return
 	}
+
 	// TODO(#943): send Stateless Reset
+	p.buffer.Release()
 }
 
 func (s *server) handleInitial(p *receivedPacket) {
-	// TODO: add a check that DestConnID == SrcConnID
 	s.logger.Debugf("<- Received Initial packet.")
 	sess, connID, err := s.handleInitialImpl(p)
 	if err != nil {
+		p.buffer.Release()
 		s.logger.Errorf("Error occurred handling initial packet: %s", err)
 		return
 	}
-	if sess == nil { // a retry was done
+	if sess == nil { // a retry was done, or the connection attempt was rejected
+		p.buffer.Release()
 		return
 	}
+	// Don't put the packet buffer back if a new session was created.
+	// The session will handle the packet and take of that.
 	serverSession := newServerSession(sess, s.config, s.logger)
 	s.sessionHandler.Add(connID, serverSession)
 }
@@ -362,6 +383,11 @@ func (s *server) handleInitialImpl(p *receivedPacket) (quicSession, protocol.Con
 		// If no Retry is sent, the packet will be logged by the session.
 		(&wire.ExtendedHeader{Header: *p.hdr}).Log(s.logger)
 		return nil, nil, s.sendRetry(p.remoteAddr, hdr)
+	}
+
+	if queueLen := atomic.LoadInt32(&s.sessionQueueLen); queueLen >= protocol.MaxAcceptQueueSize {
+		s.logger.Debugf("Rejecting new connection. Server currently busy. Accept queue length: %d (max %d)", queueLen, protocol.MaxAcceptQueueSize)
+		return nil, nil, s.sendServerBusy(p.remoteAddr, hdr)
 	}
 
 	connID, err := protocol.GenerateConnectionID(s.config.ConnectionIDLength)
@@ -453,7 +479,56 @@ func (s *server) sendRetry(remoteAddr net.Addr, hdr *wire.Header) error {
 	return nil
 }
 
+func (s *server) sendServerBusy(remoteAddr net.Addr, hdr *wire.Header) error {
+	sealer, _, err := handshake.NewInitialAEAD(hdr.DestConnectionID, protocol.PerspectiveServer)
+	if err != nil {
+		return err
+	}
+	packetBuffer := getPacketBuffer()
+	defer packetBuffer.Release()
+	buf := bytes.NewBuffer(packetBuffer.Slice[:0])
+
+	// TODO(#1567): use the SERVER_BUSY error code
+	ccf := &wire.ConnectionCloseFrame{ErrorCode: qerr.PeerGoingAway}
+
+	replyHdr := &wire.ExtendedHeader{}
+	replyHdr.IsLongHeader = true
+	replyHdr.Type = protocol.PacketTypeInitial
+	replyHdr.Version = hdr.Version
+	replyHdr.SrcConnectionID = hdr.DestConnectionID
+	replyHdr.DestConnectionID = hdr.SrcConnectionID
+	replyHdr.PacketNumberLen = protocol.PacketNumberLen4
+	replyHdr.Length = 4 /* packet number len */ + ccf.Length(hdr.Version) + protocol.ByteCount(sealer.Overhead())
+	if err := replyHdr.Write(buf, hdr.Version); err != nil {
+		return err
+	}
+	payloadOffset := buf.Len()
+
+	if err := ccf.Write(buf, hdr.Version); err != nil {
+		return err
+	}
+
+	raw := buf.Bytes()
+	_ = sealer.Seal(raw[payloadOffset:payloadOffset], raw[payloadOffset:], replyHdr.PacketNumber, raw[:payloadOffset])
+	raw = raw[0 : buf.Len()+sealer.Overhead()]
+
+	pnOffset := payloadOffset - int(replyHdr.PacketNumberLen)
+	sealer.EncryptHeader(
+		raw[pnOffset+4:pnOffset+4+16],
+		&raw[0],
+		raw[pnOffset:payloadOffset],
+	)
+
+	replyHdr.Log(s.logger)
+	wire.LogFrame(s.logger, ccf, true)
+	if _, err := s.conn.WriteTo(raw, remoteAddr); err != nil {
+		s.logger.Debugf("Error rejecting connection: %s", err)
+	}
+	return nil
+}
+
 func (s *server) sendVersionNegotiationPacket(p *receivedPacket) {
+	defer p.buffer.Release()
 	hdr := p.hdr
 	s.logger.Debugf("Client offered version %s, sending Version Negotiation", hdr.Version)
 	data, err := wire.ComposeVersionNegotiation(hdr.SrcConnectionID, hdr.DestConnectionID, s.config.Versions)
