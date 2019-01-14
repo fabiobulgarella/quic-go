@@ -24,6 +24,7 @@ import (
 
 type unpacker interface {
 	Unpack(hdr *wire.Header, data []byte) (*unpackedPacket, error)
+	GetLargestRcvdPacketNumber() protocol.PacketNumber
 }
 
 type streamGetter interface {
@@ -549,12 +550,12 @@ func (s *session) handleUnpackedPacket(packet *unpackedPacket, rcvTime time.Time
 	}
 
 	// Handle SpinBit and DelaySample variations
-	if !hdr.IsLongHeader {
-		if hdr.PacketNumber == s.unpacker.largestRcvdPacketNumber {
-			s.packer.HandleSpinBit(s.perspective, hdr.SpinBit)
+	if !packet.hdr.IsLongHeader {
+		if packet.hdr.PacketNumber == s.unpacker.GetLargestRcvdPacketNumber() {
+			s.packer.HandleSpinBit(s.perspective, packet.hdr.SpinBit)
 		}
-		if hdr.DelaySample {
-			s.packer.HandleDelaySample(s.perspective, hdr.SpinBit)
+		if packet.hdr.DelaySample {
+			s.packer.HandleDelaySample(s.perspective, packet.hdr.SpinBit)
 		}
 	}
 
