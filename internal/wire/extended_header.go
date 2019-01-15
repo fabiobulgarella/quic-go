@@ -139,10 +139,10 @@ func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, v protocol.VersionNum
 	typeByte := 0x40 | uint8(h.PacketNumberLen-1)
 
 	if h.SpinBit {
-		typeByte |= byte(0x20)
+		typeByte |= 0x20
 	}
 	if h.DelaySample {
-		typeByte |= byte(0x10)
+		typeByte |= 0x10
 	}
 
 	typeByte |= byte(h.KeyPhase << 2)

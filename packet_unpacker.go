@@ -102,5 +102,5 @@ func (u *packetUnpacker) Unpack(hdr *wire.Header, data []byte) (*unpackedPacket,
 }
 
 func (u *packetUnpacker) GetLargestRcvdPacketNumber() protocol.PacketNumber {
-	return u.largestRcvdPacketNumber;
+	return u.largestRcvdPacketNumber
 }
