@@ -24,6 +24,7 @@ import (
 
 type unpacker interface {
 	Unpack(hdr *wire.Header, data []byte) (*unpackedPacket, error)
+	GetLargestRcvdPacketNumber() protocol.PacketNumber
 }
 
 type streamGetter interface {
@@ -546,6 +547,14 @@ func (s *session) handleUnpackedPacket(packet *unpackedPacket, rcvTime time.Time
 			s.receivedFirstForwardSecurePacket = true
 			s.sentPacketHandler.SetHandshakeComplete()
 		}
+	}
+
+	// Handle SpinBit and Packet Loss bits variations
+	if !packet.hdr.IsLongHeader {
+		if packet.packetNumber == s.unpacker.GetLargestRcvdPacketNumber() {
+			s.packer.HandleSpinBit(packet.hdr.SpinBit)
+		}
+		s.packer.HandleIncomingLossBits(packet.hdr.LossBits)
 	}
 
 	r := bytes.NewReader(packet.data)

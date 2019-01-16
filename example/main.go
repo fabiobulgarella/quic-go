@@ -10,6 +10,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -64,6 +65,17 @@ func init() {
 			fmt.Printf("error reading body while handling /echo: %s\n", err.Error())
 		}
 		w.Write(body)
+	})
+
+	http.HandleFunc("/demo/big/", func(w http.ResponseWriter, r *http.Request) {
+		dim, err := strconv.Atoi(r.URL.Path[len("/demo/big/"):])
+		if err != nil {
+			io.WriteString(w, "<html><body><p>Value not allowed! Insert only integers.</p></body></html>")
+		} else {
+			data := make([]byte, dim*1024*1024)
+			w.Write(data)
+			data = nil
+		}
 	})
 
 	// accept file uploads and return the MD5 of the uploaded file
