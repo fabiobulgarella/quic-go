@@ -23,7 +23,7 @@ type ExtendedHeader struct {
 
 	// spin bit and packet loss related fields
 	SpinBit     bool
-	LossBits    byte
+	LossBit     bool
 }
 
 func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (*ExtendedHeader, error) {
@@ -60,7 +60,7 @@ func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, v protocol.VersionNum
 	*/
 
 	h.SpinBit = h.typeByte&0x20 > 0
-	h.LossBits = h.typeByte&0x18 >> 3
+	h.LossBit = h.typeByte&0x10 > 0
 	h.KeyPhase = int(h.typeByte&0x4) >> 2
 
 	if err := h.readPacketNumber(b); err != nil {
@@ -141,7 +141,9 @@ func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, v protocol.VersionNum
 	if h.SpinBit {
 		typeByte |= 0x20
 	}
-	typeByte |= h.LossBits << 3
+	if h.LossBit {
+		typeByte |= 0x10
+	}
 
 	typeByte |= byte(h.KeyPhase << 2)
 

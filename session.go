@@ -554,7 +554,7 @@ func (s *session) handleUnpackedPacket(packet *unpackedPacket, rcvTime time.Time
 		if packet.packetNumber == s.unpacker.GetLargestRcvdPacketNumber() {
 			s.packer.HandleSpinBit(packet.hdr.SpinBit)
 		}
-		s.packer.HandleIncomingLossBits(packet.hdr.LossBits)
+		s.packer.HandleIncomingLossBit(packet.hdr.LossBit)
 	}
 
 	r := bytes.NewReader(packet.data)

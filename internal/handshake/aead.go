@@ -44,7 +44,7 @@ func (s *sealer) EncryptHeader(sample []byte, firstByte *byte, pnBytes []byte) {
 	}
 	s.hpEncrypter.Encrypt(s.hpMask, sample)
 	if s.is1RTT {
-		*firstByte ^= s.hpMask[0] & 0x7 // changed from 0x1f so packet loss bits are not encrypted
+		*firstByte ^= s.hpMask[0] & 0xf // changed from 0x1f so packet loss bit is not encrypted
 	} else {
 		*firstByte ^= s.hpMask[0] & 0xf
 	}
@@ -94,7 +94,7 @@ func (o *opener) DecryptHeader(sample []byte, firstByte *byte, pnBytes []byte) {
 	}
 	o.pnDecrypter.Encrypt(o.hpMask, sample)
 	if o.is1RTT {
-		*firstByte ^= o.hpMask[0] & 0x7 // changed from 0x1f because packet loss bits are not encrypted
+		*firstByte ^= o.hpMask[0] & 0xf // changed from 0x1f because packet loss bit is not encrypted
 	} else {
 		*firstByte ^= o.hpMask[0] & 0xf
 	}

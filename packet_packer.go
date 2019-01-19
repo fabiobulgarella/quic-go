@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"time"
 
@@ -25,7 +24,7 @@ type packer interface {
 	ChangeDestConnectionID(protocol.ConnectionID)
 
 	HandleSpinBit(bool)
-	HandleIncomingLossBits(byte)
+	HandleIncomingLossBit(bool)
 }
 
 type packedPacket struct {
@@ -119,15 +118,13 @@ type packetPacker struct {
 
 	// spin bit and packet loss bits related fields
 	spinBit          bool
-	currentLossBits  byte
-	previousLossBits byte
-	oldLossBits      byte
+	lossPause        bool
 	reflectionPhase  bool
 	genPacketCounter uint
 	rflPacketCounter uint
-	serverQueue      uint64
-	serverQueuePtr   uint64
-	serverQueueDiv   uint64
+	firstPacketTime  int64
+	lossPauseEndTime int64
+	halfRttEndTime   int64
 }
 
 var _ packer = &packetPacker{}
@@ -159,9 +156,7 @@ func newPacketPacker(
 		acks:            acks,
 		pnManager:       packetNumberManager,
 		maxPacketSize:   getMaxPacketSize(remoteAddr),
-		currentLossBits:  1,
-		previousLossBits: 3,
-		oldLossBits:      2,
+		lossPause:       true,
 	}
 }
 
@@ -429,7 +424,7 @@ func (p *packetPacker) writeAndSealPacket(
 		}
 	} else {
 		// handle outgoing loss bits
-		header.LossBits = p.handleOutgoingLossBits()
+		header.LossBit = p.handleOutgoingLossBit()
 	}
 
 	if err := header.Write(buffer, p.version); err != nil {
@@ -515,81 +510,73 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 	}
 }
 
-func (p *packetPacker) HandleIncomingLossBits(hdrLossBits byte) {
-
-	//log.Printf("Incoming Loss Bits -> %v", hdrLossBits)
-
-	// handle loss bits on client context
+func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
+	// handle loss bit on client context
 	if p.perspective == protocol.PerspectiveClient {
-		if hdrLossBits == p.currentLossBits {
-			if !p.reflectionPhase {
-				p.genPacketCounter = 0
-				p.rflPacketCounter = 1
-			}
-			// toggle reflection_phase bit and swap loss bits states
-			p.reflectionPhase = !p.reflectionPhase
-			p.currentLossBits, p.previousLossBits, p.oldLossBits = p.oldLossBits, p.currentLossBits, p.previousLossBits
-		} else if p.reflectionPhase {
-			if hdrLossBits == p.previousLossBits {
-				p.rflPacketCounter++
-			}
-		} else if hdrLossBits == p.oldLossBits {
-			p.rflPacketCounter++
-			//log.Printf("Received loss bits (%v) are equal to old (%v)", hdrLossBits, p.oldLossBits)
-		} else {
-			if p.genPacketCounter < 1 {
-				p.genPacketCounter++
+		if hdrLossBit {
+			if p.lossPause {
+				if p.reflectionPhase {
+					p.rflPacketCounter++
+				}
+			} else {
+				now := time.Now().UnixNano()
+				if now <= p.halfRttEndTime {
+					if p.reflectionPhase {
+						p.rflPacketCounter++
+					}
+				} else {
+					if !p.reflectionPhase {
+						p.genPacketCounter = 0
+						p.rflPacketCounter = 1
+					}
+
+					p.reflectionPhase = !p.reflectionPhase
+					p.lossPause = true
+					rtt := now - p.firstPacketTime
+					p.lossPauseEndTime = now + rtt
+					p.halfRttEndTime = p.lossPauseEndTime + (rtt >> 1)
+				}
 			}
 		}
+
+		p.genPacketCounter++
 
 		// handle loss bits on server context
-	} else if hdrLossBits > 0 {
-		if p.serverQueuePtr == 0 {
-			p.serverQueuePtr = 0x3
-			p.serverQueueDiv = 0x1
-			p.serverQueue = uint64(hdrLossBits)
-			//log.Printf("Server FIFO Queue was empty -> first PL value: %v, pointer: %x", hdrLossBits, p.serverQueuePtr)
-		} else if p.serverQueuePtr != uint64(0xc000000000000000) {
-			p.serverQueuePtr <<= 2
-			p.serverQueueDiv <<= 2
-			p.serverQueue <<= 2
-			p.serverQueue |= uint64(hdrLossBits)
-			//log.Printf("Server FIFO Queue add entry -> PL value: %v, pointer: %x", hdrLossBits, p.serverQueuePtr)
-		} else {
-			log.Printf("Server FIFO Queue is full -> discarded PL value: %v, pointer: %x", hdrLossBits, p.serverQueuePtr)
-		}
+	} else if hdrLossBit {
+		p.rflPacketCounter++
 	}
 }
 
-func (p *packetPacker) handleOutgoingLossBits() byte {
-	var lossBits byte = 0
-
+func (p *packetPacker) handleOutgoingLossBit() bool {
 	// handle loss bits on client context
 	if p.perspective == protocol.PerspectiveClient {
-		if p.reflectionPhase {
-			if p.rflPacketCounter > 0 {
-				p.rflPacketCounter--
-				lossBits = p.currentLossBits
+		if p.lossPause {
+			now := time.Now().UnixNano()
+			if now > p.lossPauseEndTime {
+				p.firstPacketTime = now
+				p.lossPause = false
+				if p.reflectionPhase {
+						p.rflPacketCounter--
+				}
+				return true
 			}
-			// Generation phase
-		} else if p.rflPacketCounter > 0 {
-			p.rflPacketCounter--
-			lossBits = p.previousLossBits
-		} else if p.genPacketCounter > 0 {
-			p.genPacketCounter--
-			lossBits = p.currentLossBits
-			//log.Printf("Client GEN Packet Counter: %v  PL outgoing value: %v", p.genPacketCounter, lossBits)
+		} else {
+			if p.reflectionPhase {
+				if p.rflPacketCounter > 0 {
+					p.rflPacketCounter--
+					return true
+				}
+			} else if p.genPacketCounter > 0 {
+				p.genPacketCounter--
+				return true
+			}
 		}
 
 		// handle loss bits on server context
-	} else if p.serverQueuePtr != 0 {
-		lossBits = byte((p.serverQueue & p.serverQueuePtr) / p.serverQueueDiv)
-		p.serverQueuePtr >>= 2
-		p.serverQueueDiv >>= 2
-		//log.Printf("Server FIFO Queue rem entry -> PL value: %v, pointer: %x", lossBits, p.serverQueuePtr)
+	} else if p.rflPacketCounter > 0 {
+		p.rflPacketCounter--
+		return true
 	}
 
-	//log.Printf("Outgoing Loss Bits -> %v", lossBits)
-
-	return lossBits
+	return false
 }
