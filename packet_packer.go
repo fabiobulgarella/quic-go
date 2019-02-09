@@ -25,8 +25,8 @@ type packer interface {
 	SetToken([]byte)
 	ChangeDestConnectionID(protocol.ConnectionID)
 
-	HandleSpinBit(protocol.Perspective, bool)
-	HandleDelaySample(protocol.Perspective, bool)
+	HandleSpinBit(bool)
+	HandleDelaySample(bool)
 }
 
 type packedPacket struct {
@@ -513,8 +513,8 @@ func (p *packetPacker) HandleTransportParameters(params *handshake.TransportPara
 	}
 }
 
-func (p *packetPacker) HandleSpinBit(perspective protocol.Perspective, hdrSpinBit bool) {
-	if perspective == protocol.PerspectiveClient {
+func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
+	if p.perspective == protocol.PerspectiveClient {
 		// client -> invert spinBit
 		p.spinBit = !hdrSpinBit
 		if p.spinBit != p.prevSpinBit {
@@ -540,8 +540,8 @@ func (p *packetPacker) HandleSpinBit(perspective protocol.Perspective, hdrSpinBi
 	}
 }
 
-func (p *packetPacker) HandleDelaySample(perspective protocol.Perspective, hdrSpinBit bool) {
-	if perspective == protocol.PerspectiveClient {
+func (p *packetPacker) HandleDelaySample(hdrSpinBit bool) {
+	if p.perspective == protocol.PerspectiveClient {
 		if hdrSpinBit != p.spinBit {
 			// client -> reflect delaySample if next packet has the OPPOSITE spinBit
 			p.gotDelaySample = true
