@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"io/ioutil"
 	"math/big"
 	"time"
 
@@ -69,14 +70,15 @@ var _ = Describe("Crypto Setup TLS", func() {
 		server, err := NewCryptoSetupServer(
 			sInitialStream,
 			sHandshakeStream,
+			ioutil.Discard,
 			protocol.ConnectionID{},
-			&TransportParameters{},
-			func(p *TransportParameters) {},
+			&EncryptedExtensionsTransportParameters{
+				NegotiatedVersion: protocol.VersionTLS,
+				SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
+			},
+			func([]byte) {},
 			testdata.GetTLSConfig(),
-			[]protocol.VersionNumber{protocol.VersionTLS},
-			protocol.VersionTLS,
 			utils.DefaultLogger.WithPrefix("server"),
-			protocol.PerspectiveServer,
 		)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -99,14 +101,15 @@ var _ = Describe("Crypto Setup TLS", func() {
 		server, err := NewCryptoSetupServer(
 			sInitialStream,
 			sHandshakeStream,
+			ioutil.Discard,
 			protocol.ConnectionID{},
-			&TransportParameters{},
-			func(p *TransportParameters) {},
+			&EncryptedExtensionsTransportParameters{
+				NegotiatedVersion: protocol.VersionTLS,
+				SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
+			},
+			func([]byte) {},
 			testdata.GetTLSConfig(),
-			[]protocol.VersionNumber{protocol.VersionTLS},
-			protocol.VersionTLS,
 			utils.DefaultLogger.WithPrefix("server"),
-			protocol.PerspectiveServer,
 		)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -128,14 +131,15 @@ var _ = Describe("Crypto Setup TLS", func() {
 		server, err := NewCryptoSetupServer(
 			sInitialStream,
 			sHandshakeStream,
+			ioutil.Discard,
 			protocol.ConnectionID{},
-			&TransportParameters{},
-			func(p *TransportParameters) {},
+			&EncryptedExtensionsTransportParameters{
+				NegotiatedVersion: protocol.VersionTLS,
+				SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
+			},
+			func([]byte) {},
 			testdata.GetTLSConfig(),
-			[]protocol.VersionNumber{protocol.VersionTLS},
-			protocol.VersionTLS,
 			utils.DefaultLogger.WithPrefix("server"),
-			protocol.PerspectiveServer,
 		)
 		Expect(err).ToNot(HaveOccurred())
 
@@ -208,16 +212,14 @@ var _ = Describe("Crypto Setup TLS", func() {
 			client, _, err := NewCryptoSetupClient(
 				cInitialStream,
 				cHandshakeStream,
-				nil,
+				ioutil.Discard,
 				protocol.ConnectionID{},
-				&TransportParameters{},
-				func(p *TransportParameters) {},
+				&ClientHelloTransportParameters{
+					InitialVersion: protocol.VersionTLS,
+				},
+				func([]byte) {},
 				clientConf,
-				protocol.VersionTLS,
-				[]protocol.VersionNumber{protocol.VersionTLS},
-				protocol.VersionTLS,
 				utils.DefaultLogger.WithPrefix("client"),
-				protocol.PerspectiveClient,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -225,14 +227,16 @@ var _ = Describe("Crypto Setup TLS", func() {
 			server, err := NewCryptoSetupServer(
 				sInitialStream,
 				sHandshakeStream,
+				ioutil.Discard,
 				protocol.ConnectionID{},
-				&TransportParameters{StatelessResetToken: bytes.Repeat([]byte{42}, 16)},
-				func(p *TransportParameters) {},
+				&EncryptedExtensionsTransportParameters{
+					NegotiatedVersion: protocol.VersionTLS,
+					SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
+					Parameters:        TransportParameters{StatelessResetToken: bytes.Repeat([]byte{42}, 16)},
+				},
+				func([]byte) {},
 				serverConf,
-				[]protocol.VersionNumber{protocol.VersionTLS},
-				protocol.VersionTLS,
 				utils.DefaultLogger.WithPrefix("server"),
-				protocol.PerspectiveServer,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -260,16 +264,14 @@ var _ = Describe("Crypto Setup TLS", func() {
 			client, chChan, err := NewCryptoSetupClient(
 				cInitialStream,
 				cHandshakeStream,
-				nil,
+				ioutil.Discard,
 				protocol.ConnectionID{},
-				&TransportParameters{},
-				func(p *TransportParameters) {},
+				&ClientHelloTransportParameters{
+					InitialVersion: protocol.VersionTLS,
+				},
+				func([]byte) {},
 				&tls.Config{InsecureSkipVerify: true},
-				protocol.VersionTLS,
-				[]protocol.VersionNumber{protocol.VersionTLS},
-				protocol.VersionTLS,
 				utils.DefaultLogger.WithPrefix("client"),
-				protocol.PerspectiveClient,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -294,22 +296,18 @@ var _ = Describe("Crypto Setup TLS", func() {
 		})
 
 		It("receives transport parameters", func() {
-			var cTransportParametersRcvd, sTransportParametersRcvd *TransportParameters
+			var cTransportParametersRcvd, sTransportParametersRcvd []byte
 			cChunkChan, cInitialStream, cHandshakeStream := initStreams()
 			cTransportParameters := &TransportParameters{IdleTimeout: 0x42 * time.Second}
 			client, _, err := NewCryptoSetupClient(
 				cInitialStream,
 				cHandshakeStream,
-				nil,
+				ioutil.Discard,
 				protocol.ConnectionID{},
-				cTransportParameters,
-				func(p *TransportParameters) { sTransportParametersRcvd = p },
+				&ClientHelloTransportParameters{Parameters: *cTransportParameters},
+				func(p []byte) { sTransportParametersRcvd = p },
 				clientConf,
-				protocol.VersionTLS,
-				[]protocol.VersionNumber{protocol.VersionTLS},
-				protocol.VersionTLS,
 				utils.DefaultLogger.WithPrefix("client"),
-				protocol.PerspectiveClient,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -321,14 +319,12 @@ var _ = Describe("Crypto Setup TLS", func() {
 			server, err := NewCryptoSetupServer(
 				sInitialStream,
 				sHandshakeStream,
+				ioutil.Discard,
 				protocol.ConnectionID{},
-				sTransportParameters,
-				func(p *TransportParameters) { cTransportParametersRcvd = p },
+				&EncryptedExtensionsTransportParameters{Parameters: *sTransportParameters},
+				func(p []byte) { cTransportParametersRcvd = p },
 				testdata.GetTLSConfig(),
-				[]protocol.VersionNumber{protocol.VersionTLS},
-				protocol.VersionTLS,
 				utils.DefaultLogger.WithPrefix("server"),
-				protocol.PerspectiveServer,
 			)
 			Expect(err).ToNot(HaveOccurred())
 
@@ -342,9 +338,13 @@ var _ = Describe("Crypto Setup TLS", func() {
 			}()
 			Eventually(done).Should(BeClosed())
 			Expect(cTransportParametersRcvd).ToNot(BeNil())
-			Expect(cTransportParametersRcvd.IdleTimeout).To(Equal(cTransportParameters.IdleTimeout))
+			chtp := &ClientHelloTransportParameters{}
+			Expect(chtp.Unmarshal(cTransportParametersRcvd)).To(Succeed())
+			Expect(chtp.Parameters.IdleTimeout).To(Equal(cTransportParameters.IdleTimeout))
 			Expect(sTransportParametersRcvd).ToNot(BeNil())
-			Expect(sTransportParametersRcvd.IdleTimeout).To(Equal(sTransportParameters.IdleTimeout))
+			eetp := &EncryptedExtensionsTransportParameters{}
+			Expect(eetp.Unmarshal(sTransportParametersRcvd)).To(Succeed())
+			Expect(eetp.Parameters.IdleTimeout).To(Equal(sTransportParameters.IdleTimeout))
 		})
 	})
 })

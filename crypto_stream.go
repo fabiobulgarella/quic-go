@@ -21,6 +21,35 @@ type cryptoStream interface {
 	PopCryptoFrame(protocol.ByteCount) *wire.CryptoFrame
 }
 
+type postHandshakeCryptoStream struct {
+	cryptoStream
+
+	framer framer
+}
+
+func newPostHandshakeCryptoStream(framer framer) cryptoStream {
+	return &postHandshakeCryptoStream{
+		cryptoStream: newCryptoStream(),
+		framer:       framer,
+	}
+}
+
+// Write writes post-handshake messages.
+// For simplicity, post-handshake crypto messages are treated as control frames.
+// The framer functions as a stack (LIFO), so if there are multiple writes,
+// they will be returned in the opposite order.
+// This is acceptable, since post-handshake crypto messages are very rare.
+func (s *postHandshakeCryptoStream) Write(p []byte) (int, error) {
+	n, err := s.cryptoStream.Write(p)
+	if err != nil {
+		return n, err
+	}
+	for s.cryptoStream.HasData() {
+		s.framer.QueueControlFrame(s.PopCryptoFrame(protocol.MaxPostHandshakeCryptoFrameSize))
+	}
+	return n, nil
+}
+
 type cryptoStreamImpl struct {
 	queue  *frameSorter
 	msgBuf []byte
@@ -33,9 +62,7 @@ type cryptoStreamImpl struct {
 }
 
 func newCryptoStream() cryptoStream {
-	return &cryptoStreamImpl{
-		queue: newFrameSorter(),
-	}
+	return &cryptoStreamImpl{queue: newFrameSorter()}
 }
 
 func (s *cryptoStreamImpl) HandleCryptoFrame(f *wire.CryptoFrame) error {
@@ -53,11 +80,11 @@ func (s *cryptoStreamImpl) HandleCryptoFrame(f *wire.CryptoFrame) error {
 		return nil
 	}
 	s.highestOffset = utils.MaxByteCount(s.highestOffset, highestOffset)
-	if err := s.queue.Push(f.Data, f.Offset, false); err != nil {
+	if err := s.queue.Push(f.Data, f.Offset); err != nil {
 		return err
 	}
 	for {
-		data, _ := s.queue.Pop()
+		_, data := s.queue.Pop()
 		if data == nil {
 			return nil
 		}
