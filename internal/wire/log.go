@@ -33,6 +33,10 @@ func LogFrame(logger utils.Logger, frame Frame, sent bool) {
 		} else {
 			logger.Debugf("\t%s &wire.AckFrame{LargestAcked: %#x, LowestAcked: %#x, DelayTime: %s}", dir, f.LargestAcked(), f.LowestAcked(), f.DelayTime.String())
 		}
+	case *NewConnectionIDFrame:
+		logger.Debugf("\t%s &wire.NewConnectionIDFrame{SequenceNumber: %d, ConnectionID: %s, StatelessResetToken: %#x}", dir, f.SequenceNumber, f.ConnectionID, f.StatelessResetToken)
+	case *NewTokenFrame:
+		logger.Debugf("\t%s &wire.NewTokenFrame{Token: %#x}", dir, f.Token)
 	default:
 		logger.Debugf("\t%s %#v", dir, frame)
 	}

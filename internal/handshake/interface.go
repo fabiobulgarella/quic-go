@@ -24,13 +24,15 @@ type Sealer interface {
 // A tlsExtensionHandler sends and received the QUIC TLS extension.
 type tlsExtensionHandler interface {
 	GetExtensions(msgType uint8) []qtls.Extension
-	ReceivedExtensions(msgType uint8, exts []qtls.Extension) error
+	ReceivedExtensions(msgType uint8, exts []qtls.Extension)
+	TransportParameters() <-chan []byte
 }
 
 // CryptoSetup handles the handshake and protecting / unprotecting packets
 type CryptoSetup interface {
 	RunHandshake() error
 	io.Closer
+	ChangeConnectionID(protocol.ConnectionID) error
 
 	HandleMessage([]byte, protocol.EncryptionLevel) bool
 	ConnectionState() ConnectionState

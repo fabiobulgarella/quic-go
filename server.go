@@ -32,6 +32,7 @@ type unknownPacketHandler interface {
 }
 
 type packetHandlerManager interface {
+	io.Closer
 	Add(protocol.ConnectionID, packetHandler)
 	Retire(protocol.ConnectionID)
 	Remove(protocol.ConnectionID)
@@ -300,7 +301,7 @@ func (s *server) closeWithMutex() error {
 	// If the server was started with ListenAddr, we created the packet conn.
 	// We need to close it in order to make the go routine reading from that conn return.
 	if s.createdPacketConn {
-		err = s.conn.Close()
+		err = s.sessionHandler.Close()
 	}
 	s.closed = true
 	close(s.errorChan)
@@ -426,6 +427,7 @@ func (s *server) createNewSession(
 		IdleTimeout:                    s.config.IdleTimeout,
 		MaxBidiStreams:                 uint64(s.config.MaxIncomingStreams),
 		MaxUniStreams:                  uint64(s.config.MaxIncomingUniStreams),
+		AckDelayExponent:               protocol.AckDelayExponent,
 		DisableMigration:               true,
 		// TODO(#855): generate a real token
 		StatelessResetToken:  bytes.Repeat([]byte{42}, 16),

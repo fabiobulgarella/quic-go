@@ -527,8 +527,7 @@ var _ = Describe("Send Stream", func() {
 				})
 				mockSender.EXPECT().onStreamCompleted(streamID)
 				str.writeOffset = 1234
-				err := str.CancelWrite(9876)
-				Expect(err).ToNot(HaveOccurred())
+				str.CancelWrite(9876)
 			})
 
 			It("unblocks Write", func() {
@@ -549,10 +548,33 @@ var _ = Describe("Send Stream", func() {
 				waitForWrite()
 				frame, _ := str.popStreamFrame(50)
 				Expect(frame).ToNot(BeNil())
-				err := str.CancelWrite(1234)
-				Expect(err).ToNot(HaveOccurred())
+				str.CancelWrite(1234)
 				Eventually(writeReturned).Should(BeClosed())
 				Expect(n).To(BeEquivalentTo(frame.DataLen()))
+			})
+
+			It("doesn't pop STREAM frames after being canceled", func() {
+				mockSender.EXPECT().onHasStreamData(streamID)
+				mockSender.EXPECT().onStreamCompleted(streamID)
+				mockSender.EXPECT().queueControlFrame(gomock.Any())
+				mockFC.EXPECT().SendWindowSize().Return(protocol.MaxByteCount)
+				mockFC.EXPECT().AddBytesSent(gomock.Any())
+				writeReturned := make(chan struct{})
+				go func() {
+					defer GinkgoRecover()
+					_, err := strWithTimeout.Write(bytes.Repeat([]byte{0}, 100))
+					Expect(err).To(MatchError("Write on stream 1337 canceled with error code 1234"))
+					close(writeReturned)
+				}()
+				waitForWrite()
+				frame, hasMoreData := str.popStreamFrame(50)
+				Expect(hasMoreData).To(BeTrue())
+				Expect(frame).ToNot(BeNil())
+				str.CancelWrite(1234)
+				frame, hasMoreData = str.popStreamFrame(10)
+				Expect(hasMoreData).To(BeFalse())
+				Expect(frame).To(BeNil())
+				Eventually(writeReturned).Should(BeClosed())
 			})
 
 			It("cancels the context", func() {
@@ -566,27 +588,23 @@ var _ = Describe("Send Stream", func() {
 			It("doesn't allow further calls to Write", func() {
 				mockSender.EXPECT().queueControlFrame(gomock.Any())
 				mockSender.EXPECT().onStreamCompleted(streamID)
-				err := str.CancelWrite(1234)
-				Expect(err).ToNot(HaveOccurred())
-				_, err = strWithTimeout.Write([]byte("foobar"))
+				str.CancelWrite(1234)
+				_, err := strWithTimeout.Write([]byte("foobar"))
 				Expect(err).To(MatchError("Write on stream 1337 canceled with error code 1234"))
 			})
 
 			It("only cancels once", func() {
-				mockSender.EXPECT().queueControlFrame(gomock.Any())
+				mockSender.EXPECT().queueControlFrame(&wire.ResetStreamFrame{StreamID: streamID, ErrorCode: 1234})
 				mockSender.EXPECT().onStreamCompleted(streamID)
-				err := str.CancelWrite(1234)
-				Expect(err).ToNot(HaveOccurred())
-				err = str.CancelWrite(4321)
-				Expect(err).ToNot(HaveOccurred())
+				str.CancelWrite(1234)
+				str.CancelWrite(4321)
 			})
 
-			It("doesn't cancel when the stream was already closed", func() {
+			It("doesn't do anything when the stream was already closed", func() {
 				mockSender.EXPECT().onHasStreamData(streamID)
-				err := str.Close()
-				Expect(err).ToNot(HaveOccurred())
-				err = str.CancelWrite(123)
-				Expect(err).To(MatchError("CancelWrite for closed stream 1337"))
+				Expect(str.Close()).To(Succeed())
+				// don't EXPECT any calls to queueControlFrame
+				str.CancelWrite(123)
 			})
 		})
 

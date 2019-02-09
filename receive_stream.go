@@ -28,8 +28,9 @@ type receiveStream struct {
 
 	sender streamSender
 
-	frameQueue *frameSorter
-	readOffset protocol.ByteCount
+	frameQueue  *frameSorter
+	readOffset  protocol.ByteCount
+	finalOffset protocol.ByteCount
 
 	currentFrame       []byte
 	currentFrameIsLast bool // is the currentFrame the last frame on this stream
@@ -66,6 +67,7 @@ func newReceiveStream(
 		flowController: flowController,
 		frameQueue:     newFrameSorter(),
 		readChan:       make(chan struct{}, 1),
+		finalOffset:    protocol.MaxByteCount,
 		version:        version,
 	}
 }
@@ -76,17 +78,17 @@ func (s *receiveStream) StreamID() protocol.StreamID {
 
 // Read implements io.Reader. It is not thread safe!
 func (s *receiveStream) Read(p []byte) (int, error) {
+	s.mutex.Lock()
 	completed, n, err := s.readImpl(p)
+	s.mutex.Unlock()
+
 	if completed {
-		s.sender.onStreamCompleted(s.streamID)
+		s.streamCompleted()
 	}
 	return n, err
 }
 
 func (s *receiveStream) readImpl(p []byte) (bool /*stream completed */, int, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	if s.finRead {
 		return false, 0, io.EOF
 	}
@@ -172,8 +174,6 @@ func (s *receiveStream) readImpl(p []byte) (bool /*stream completed */, int, err
 		if !s.resetRemotely {
 			s.flowController.AddBytesRead(protocol.ByteCount(m))
 		}
-		// increase the flow control window, if necessary
-		s.flowController.MaybeQueueWindowUpdate()
 
 		if s.readPosInFrame >= len(s.currentFrame) && s.currentFrameIsLast {
 			s.finRead = true
@@ -184,19 +184,25 @@ func (s *receiveStream) readImpl(p []byte) (bool /*stream completed */, int, err
 }
 
 func (s *receiveStream) dequeueNextFrame() {
-	s.currentFrame, s.currentFrameIsLast = s.frameQueue.Pop()
+	var offset protocol.ByteCount
+	offset, s.currentFrame = s.frameQueue.Pop()
+	s.currentFrameIsLast = offset+protocol.ByteCount(len(s.currentFrame)) >= s.finalOffset
 	s.readPosInFrame = 0
 }
 
-func (s *receiveStream) CancelRead(errorCode protocol.ApplicationErrorCode) error {
+func (s *receiveStream) CancelRead(errorCode protocol.ApplicationErrorCode) {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	completed := s.cancelReadImpl(errorCode)
+	s.mutex.Unlock()
 
-	if s.finRead {
-		return nil
+	if completed {
+		s.streamCompleted()
 	}
-	if s.canceledRead {
-		return nil
+}
+
+func (s *receiveStream) cancelReadImpl(errorCode protocol.ApplicationErrorCode) bool /* completed */ {
+	if s.finRead || s.canceledRead || s.resetRemotely {
+		return false
 	}
 	s.canceledRead = true
 	s.cancelReadErr = fmt.Errorf("Read on stream %d canceled with error code %d", s.streamID, errorCode)
@@ -205,42 +211,58 @@ func (s *receiveStream) CancelRead(errorCode protocol.ApplicationErrorCode) erro
 		StreamID:  s.streamID,
 		ErrorCode: errorCode,
 	})
-	return nil
+	// We're done with this stream if the final offset was already received.
+	return s.finalOffset != protocol.MaxByteCount
 }
 
 func (s *receiveStream) handleStreamFrame(frame *wire.StreamFrame) error {
+	s.mutex.Lock()
+	completed, err := s.handleStreamFrameImpl(frame)
+	s.mutex.Unlock()
+
+	if completed {
+		s.streamCompleted()
+	}
+	return err
+}
+
+func (s *receiveStream) handleStreamFrameImpl(frame *wire.StreamFrame) (bool /* completed */, error) {
 	maxOffset := frame.Offset + frame.DataLen()
 	if err := s.flowController.UpdateHighestReceived(maxOffset, frame.FinBit); err != nil {
-		return err
+		return false, err
 	}
-
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	if err := s.frameQueue.Push(frame.Data, frame.Offset, frame.FinBit); err != nil {
-		return err
+	if frame.FinBit {
+		s.finalOffset = maxOffset
+	}
+	if s.canceledRead {
+		return frame.FinBit, nil
+	}
+	if err := s.frameQueue.Push(frame.Data, frame.Offset); err != nil {
+		return false, err
 	}
 	s.signalRead()
-	return nil
+	return false, nil
 }
 
 func (s *receiveStream) handleResetStreamFrame(frame *wire.ResetStreamFrame) error {
+	s.mutex.Lock()
 	completed, err := s.handleResetStreamFrameImpl(frame)
+	s.mutex.Unlock()
+
 	if completed {
-		s.sender.onStreamCompleted(s.streamID)
+		s.streamCompleted()
 	}
 	return err
 }
 
 func (s *receiveStream) handleResetStreamFrameImpl(frame *wire.ResetStreamFrame) (bool /*completed */, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	if s.closedForShutdown {
 		return false, nil
 	}
 	if err := s.flowController.UpdateHighestReceived(frame.ByteOffset, true); err != nil {
 		return false, err
 	}
+	s.finalOffset = frame.ByteOffset
 
 	// ignore duplicate RESET_STREAM frames for this stream (after checking their final offset)
 	if s.resetRemotely {
@@ -280,6 +302,17 @@ func (s *receiveStream) closeForShutdown(err error) {
 
 func (s *receiveStream) getWindowUpdate() protocol.ByteCount {
 	return s.flowController.GetWindowUpdate()
+}
+
+func (s *receiveStream) streamCompleted() {
+	s.mutex.Lock()
+	finRead := s.finRead
+	s.mutex.Unlock()
+
+	if !finRead {
+		s.flowController.Abandon()
+	}
+	s.sender.onStreamCompleted(s.streamID)
 }
 
 // signalRead performs a non-blocking send on the readChan
