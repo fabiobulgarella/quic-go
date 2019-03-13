@@ -118,14 +118,16 @@ type packetPacker struct {
 	numNonRetransmittableAcks int
 
 	// spin bit and packet loss bits related fields
-	spinBit          bool
-	lossPause        bool
-	reflectionPhase  bool
-	genPacketCounter uint
-	rflPacketCounter uint
-	firstPacketTime  int64
-	lossPauseEndTime int64
-	halfRttEndTime   int64
+	spinBit             bool
+	lossPause           bool
+	reflectionPhase     bool
+	genPacketCounter    uint
+	rflPacketCounter    uint
+	firstRflPckReceived bool
+	firstPacketTime     int64
+	lossPauseEndTime    int64
+	halfRttEndTime      int64
+	lossRttTime         int64
 }
 
 var _ packer = &packetPacker{}
@@ -521,28 +523,41 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 				if p.reflectionPhase {
 					p.rflPacketCounter++
 				}
+			} else if !p.reflectionPhase {
+				now := time.Now().UnixNano()
+				if now > p.halfRttEndTime {
+					p.genPacketCounter = 0
+					p.rflPacketCounter = 1
+					p.reflectionPhase = true
+					p.lossPause = true
+					p.lossRttTime = now - p.firstPacketTime
+					p.lossPauseEndTime = now + p.lossRttTime
+					p.halfRttEndTime = p.lossPauseEndTime + (p.lossRttTime >> 1)
+				}
 			} else {
 				now := time.Now().UnixNano()
 				if now <= p.halfRttEndTime {
-					if p.reflectionPhase {
-						p.rflPacketCounter++
-					}
-				} else {
-					if !p.reflectionPhase {
-						p.genPacketCounter = 0
-						p.rflPacketCounter = 1
-					}
+					p.rflPacketCounter++
+				} else if !p.firstRflPckReceived {
+					p.firstRflPckReceived = true
+					p.lossRttTime = now - p.firstPacketTime
+					//log.Printf("Ricevuto primo pacchetto riflesso; ancora da riflettere: %v", p.rflPacketCounter)
+				}
 
-					p.reflectionPhase = !p.reflectionPhase
+				if p.rflPacketCounter == 0 {
+					p.reflectionPhase = false
 					p.lossPause = true
-					rtt := now - p.firstPacketTime
-					p.lossPauseEndTime = now + rtt
-					p.halfRttEndTime = p.lossPauseEndTime + (rtt >> 1)
+					p.lossPauseEndTime = now + p.lossRttTime
+					p.halfRttEndTime = p.lossPauseEndTime + (p.lossRttTime >> 1)
 				}
 			}
 		}
 
-		p.genPacketCounter++
+		if !p.reflectionPhase {
+			if p.genPacketCounter < 2 {
+				p.genPacketCounter++
+			}
+		}
 
 		// handle loss bits on server context
 	} else if hdrLossBit {
@@ -559,7 +574,8 @@ func (p *packetPacker) handleOutgoingLossBit() bool {
 				p.firstPacketTime = now
 				p.lossPause = false
 				if p.reflectionPhase {
-						p.rflPacketCounter--
+					p.firstRflPckReceived = false
+					p.rflPacketCounter--
 				}
 				return true
 			}
