@@ -24,6 +24,7 @@ type ExtendedHeader struct {
 	// spin bit and delay sample related fields
 	SpinBit     bool
 	DelaySample bool
+	VEC         byte
 }
 
 func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (*ExtendedHeader, error) {
@@ -59,8 +60,9 @@ func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, v protocol.VersionNum
 	}
 	*/
 
-	h.SpinBit = h.typeByte&0x20 > 0
-	h.DelaySample = h.typeByte&0x10 > 0
+	h.SpinBit = h.typeByte&0x40 > 0
+	h.DelaySample = h.typeByte&0x20 > 0
+	h.VEC = h.typeByte&0x18 >> 3
 	h.KeyPhase = int(h.typeByte&0x4) >> 2
 
 	if err := h.readPacketNumber(b); err != nil {
@@ -136,15 +138,16 @@ func (h *ExtendedHeader) writeLongHeader(b *bytes.Buffer, v protocol.VersionNumb
 
 // TODO: add support for the key phase
 func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, v protocol.VersionNumber) error {
-	typeByte := 0x40 | uint8(h.PacketNumberLen-1)
+	//typeByte := 0x40 | uint8(h.PacketNumberLen-1)
+	typeByte := uint8(h.PacketNumberLen-1)
 
 	if h.SpinBit {
-		typeByte |= 0x20
+		typeByte |= 0x40
 	}
 	if h.DelaySample {
-		typeByte |= 0x10
+		typeByte |= 0x20
 	}
-
+	typeByte |= h.VEC << 3
 	typeByte |= byte(h.KeyPhase << 2)
 
 	b.WriteByte(typeByte)

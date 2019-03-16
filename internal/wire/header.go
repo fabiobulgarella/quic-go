@@ -55,9 +55,11 @@ func parseHeaderImpl(b *bytes.Reader, shortHeaderConnIDLen int) (*Header, error)
 	}
 
 	if !h.IsLongHeader {
+		/* TO INCLUDE BOTH DS AND VEC I NEED A BIT MORE
 		if h.typeByte&0x40 == 0 {
 			return nil, errors.New("not a QUIC packet")
 		}
+		*/
 		if err := h.parseShortHeader(b, shortHeaderConnIDLen); err != nil {
 			return nil, err
 		}

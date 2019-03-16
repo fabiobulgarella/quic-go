@@ -605,7 +605,7 @@ func (s *session) handleUnpackedPacket(packet *unpackedPacket, rcvTime time.Time
 	// Handle SpinBit and DelaySample variations
 	if !packet.hdr.IsLongHeader {
 		if packet.packetNumber == s.unpacker.GetLargestRcvdPacketNumber() {
-			s.packer.HandleSpinBit(packet.hdr.SpinBit)
+			s.packer.HandleSpinBit(packet.hdr.SpinBit, packet.hdr.VEC)
 		}
 		if packet.hdr.DelaySample {
 			s.packer.HandleDelaySample(packet.hdr.SpinBit)

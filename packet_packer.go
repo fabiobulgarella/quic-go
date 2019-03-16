@@ -24,7 +24,7 @@ type packer interface {
 	SetToken([]byte)
 	ChangeDestConnectionID(protocol.ConnectionID)
 
-	HandleSpinBit(bool)
+	HandleSpinBit(bool, byte)
 	HandleDelaySample(bool)
 }
 
@@ -124,6 +124,11 @@ type packetPacker struct {
 	skipDelaySample  bool
 	forceDelaySample bool
 	lastDelaySample  time.Time
+
+	// vec related fields
+	vec      byte
+	edge     bool
+	lastEdge time.Time
 }
 
 var _ packer = &packetPacker{}
@@ -419,17 +424,32 @@ func (p *packetPacker) writeAndSealPacket(
 			}
 			header.Length = length
 		}
-	} else if header.DelaySample {
-		// if it's a short header and delaySample is set, reset it inside packetPacker
-		p.delaySample = false
-		// check if it has to be sent (considered sendingDelay and forceDelaySample flag)
-		sendingDelay := time.Since(p.lastDelaySample)
-		if sendingDelay > time.Millisecond {
-			if !p.forceDelaySample {
-				//log.Printf("MaxSendingDelay elapsed: not sending this DelaySample -> SD: %v", sendingDelay)
-				header.DelaySample = false
-			} else {
-				p.forceDelaySample = false
+	} else {
+		if header.DelaySample {
+			// if it's a short header and delaySample is set, reset it inside packetPacker
+			p.delaySample = false
+			// check if it has to be sent (considered sendingDelay and forceDelaySample flag)
+			sendingDelay := time.Since(p.lastDelaySample)
+			if sendingDelay > time.Millisecond {
+				if !p.forceDelaySample {
+					//log.Printf("MaxSendingDelay elapsed: not sending this DelaySample -> SD: %v", sendingDelay)
+					header.DelaySample = false
+				} else {
+					p.forceDelaySample = false
+				}
+			}
+		}
+
+		// manage vec
+		if !p.edge {
+			header.VEC = 0
+		} else {
+			p.edge = false
+			header.VEC = p.vec
+			dt := time.Since(p.lastEdge)
+			if dt > time.Millisecond {
+				header.VEC = 1
+				//log.Printf("*** DELAYED OUTGOING SPIN=%v  DT=%v", p.spinBit, dt)
 			}
 		}
 	}
@@ -511,10 +531,12 @@ func (p *packetPacker) HandleTransportParameters(params *handshake.TransportPara
 	}
 }
 
-func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
+func (p *packetPacker) HandleSpinBit(hdrSpinBit bool, hdrVEC byte) {
 	if p.perspective == protocol.PerspectiveClient {
 		if p.spinBit == hdrSpinBit {
-			// got an edge, check if ended marking period has got its delaySample
+			//got an edge
+			p.edge = true
+			// check if ended marking period has got its delaySample
 			if !p.gotDelaySample {
 				if p.skipDelaySample {
 					p.skipDelaySample = false
@@ -531,8 +553,21 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 		// client -> invert spinBit
 		p.spinBit = !hdrSpinBit
 	} else {
+		if p.spinBit != hdrSpinBit {
+			//got an edge
+			p.edge = true
+		}
 		// server -> reflect spinBit
 		p.spinBit = hdrSpinBit
+	}
+
+	// manage vec
+	if p.edge {
+		p.vec = hdrVEC + 1
+		if p.vec > 3 {
+			p.vec = 3
+		}
+		p.lastEdge = time.Now()
 	}
 }
 
