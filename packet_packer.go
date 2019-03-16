@@ -536,6 +536,12 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool, hdrVEC byte) {
 		if p.spinBit == hdrSpinBit {
 			//got an edge
 			p.edge = true
+			// manage vec
+			p.vec = hdrVEC + 1
+			if p.vec > 3 {
+				p.vec = 3
+			}
+			p.lastEdge = time.Now()
 			// check if ended marking period has got its delaySample
 			if !p.gotDelaySample {
 				if p.skipDelaySample {
@@ -556,18 +562,15 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool, hdrVEC byte) {
 		if p.spinBit != hdrSpinBit {
 			//got an edge
 			p.edge = true
+			// manage vec
+			p.vec = hdrVEC + 1
+			if p.vec > 3 {
+				p.vec = 3
+			}
+			p.lastEdge = time.Now()
 		}
 		// server -> reflect spinBit
 		p.spinBit = hdrSpinBit
-	}
-
-	// manage vec
-	if p.edge {
-		p.vec = hdrVEC + 1
-		if p.vec > 3 {
-			p.vec = 3
-		}
-		p.lastEdge = time.Now()
 	}
 }
 
