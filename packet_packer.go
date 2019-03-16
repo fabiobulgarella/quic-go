@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"time"
 
@@ -120,7 +119,6 @@ type packetPacker struct {
 
 	// spin bit and delay sample related fields
 	spinBit          bool
-	prevSpinBit      bool
 	delaySample      bool
 	gotDelaySample   bool
 	skipDelaySample  bool
@@ -428,7 +426,7 @@ func (p *packetPacker) writeAndSealPacket(
 		sendingDelay := time.Since(p.lastDelaySample)
 		if sendingDelay > time.Millisecond {
 			if !p.forceDelaySample {
-				log.Printf("MaxSendingDelay elapsed: not sending this DelaySample -> SD: %v", sendingDelay)
+				//log.Printf("MaxSendingDelay elapsed: not sending this DelaySample -> SD: %v", sendingDelay)
 				header.DelaySample = false
 			} else {
 				p.forceDelaySample = false
@@ -515,12 +513,8 @@ func (p *packetPacker) HandleTransportParameters(params *handshake.TransportPara
 
 func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 	if p.perspective == protocol.PerspectiveClient {
-		// client -> invert spinBit
-		p.spinBit = !hdrSpinBit
-		if p.spinBit != p.prevSpinBit {
-			// got an edge
-			p.prevSpinBit = p.spinBit
-			// check if ended marking period has got its delaySample
+		if p.spinBit == hdrSpinBit {
+			// got an edge, check if ended marking period has got its delaySample
 			if !p.gotDelaySample {
 				if p.skipDelaySample {
 					p.skipDelaySample = false
@@ -534,6 +528,8 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 				p.gotDelaySample = false
 			}
 		}
+		// client -> invert spinBit
+		p.spinBit = !hdrSpinBit
 	} else {
 		// server -> reflect spinBit
 		p.spinBit = hdrSpinBit
