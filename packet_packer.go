@@ -157,6 +157,7 @@ func newPacketPacker(
 		pnManager:       packetNumberManager,
 		maxPacketSize:   getMaxPacketSize(remoteAddr),
 		lossPause:       true,
+		genPacketCounter: 1,
 	}
 }
 
@@ -523,7 +524,7 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 					p.rflPacketCounter++
 				}
 			} else if !p.reflectionPhase {
-				p.genPacketCounter = 0
+				p.genPacketCounter = 1
 				p.rflPacketCounter = 1
 				p.reflectionPhase = true
 				p.lossPause = true
@@ -538,7 +539,7 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 			}
 		}
 
-		if !p.reflectionPhase {
+		if !p.reflectionPhase && !p.lossPause {
 			if p.genPacketCounter < 2 {
 				p.genPacketCounter++
 			}
@@ -566,6 +567,8 @@ func (p *packetPacker) handleOutgoingLossBit() bool {
 						p.lossPause = true
 						p.lossPauseEndTime = now + p.lossRttTime * 2
 					}
+				} else {
+					p.genPacketCounter--
 				}
 				return true
 			}
