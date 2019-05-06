@@ -37,6 +37,7 @@ func (m *MockFrameSource) EXPECT() *MockFrameSourceMockRecorder {
 
 // AppendControlFrames mocks base method
 func (m *MockFrameSource) AppendControlFrames(arg0 []wire.Frame, arg1 protocol.ByteCount) ([]wire.Frame, protocol.ByteCount) {
+	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "AppendControlFrames", arg0, arg1)
 	ret0, _ := ret[0].([]wire.Frame)
 	ret1, _ := ret[1].(protocol.ByteCount)
@@ -45,17 +46,21 @@ func (m *MockFrameSource) AppendControlFrames(arg0 []wire.Frame, arg1 protocol.B
 
 // AppendControlFrames indicates an expected call of AppendControlFrames
 func (mr *MockFrameSourceMockRecorder) AppendControlFrames(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AppendControlFrames", reflect.TypeOf((*MockFrameSource)(nil).AppendControlFrames), arg0, arg1)
 }
 
 // AppendStreamFrames mocks base method
-func (m *MockFrameSource) AppendStreamFrames(arg0 []wire.Frame, arg1 protocol.ByteCount) []wire.Frame {
+func (m *MockFrameSource) AppendStreamFrames(arg0 []wire.Frame, arg1 protocol.ByteCount) ([]wire.Frame, protocol.ByteCount) {
+	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "AppendStreamFrames", arg0, arg1)
 	ret0, _ := ret[0].([]wire.Frame)
-	return ret0
+	ret1, _ := ret[1].(protocol.ByteCount)
+	return ret0, ret1
 }
 
 // AppendStreamFrames indicates an expected call of AppendStreamFrames
 func (mr *MockFrameSourceMockRecorder) AppendStreamFrames(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AppendStreamFrames", reflect.TypeOf((*MockFrameSource)(nil).AppendStreamFrames), arg0, arg1)
 }

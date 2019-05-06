@@ -23,7 +23,7 @@ type packetHandler interface {
 	handlePacket(*receivedPacket)
 	io.Closer
 	destroy(error)
-	GetPerspective() protocol.Perspective
+	getPerspective() protocol.Perspective
 }
 
 type unknownPacketHandler interface {
@@ -36,6 +36,9 @@ type packetHandlerManager interface {
 	Add(protocol.ConnectionID, packetHandler)
 	Retire(protocol.ConnectionID)
 	Remove(protocol.ConnectionID)
+	AddResetToken([16]byte, packetHandler)
+	RemoveResetToken([16]byte)
+	GetStatelessResetToken(protocol.ConnectionID) [16]byte
 	SetServer(unknownPacketHandler)
 	CloseServer()
 }
@@ -44,6 +47,7 @@ type quicSession interface {
 	Session
 	handlePacket(*receivedPacket)
 	GetVersion() protocol.VersionNumber
+	getPerspective() protocol.Perspective
 	run() error
 	destroy(error)
 	closeForRecreating() protocol.PacketNumber
@@ -51,20 +55,20 @@ type quicSession interface {
 }
 
 type sessionRunner interface {
-	onHandshakeComplete(Session)
-	retireConnectionID(protocol.ConnectionID)
-	removeConnectionID(protocol.ConnectionID)
+	OnHandshakeComplete(Session)
+	Retire(protocol.ConnectionID)
+	Remove(protocol.ConnectionID)
+	AddResetToken([16]byte, packetHandler)
+	RemoveResetToken([16]byte)
 }
 
 type runner struct {
+	packetHandlerManager
+
 	onHandshakeCompleteImpl func(Session)
-	retireConnectionIDImpl  func(protocol.ConnectionID)
-	removeConnectionIDImpl  func(protocol.ConnectionID)
 }
 
-func (r *runner) onHandshakeComplete(s Session)              { r.onHandshakeCompleteImpl(s) }
-func (r *runner) retireConnectionID(c protocol.ConnectionID) { r.retireConnectionIDImpl(c) }
-func (r *runner) removeConnectionID(c protocol.ConnectionID) { r.removeConnectionIDImpl(c) }
+func (r *runner) OnHandshakeComplete(s Session) { r.onHandshakeCompleteImpl(s) }
 
 var _ sessionRunner = &runner{}
 
@@ -144,7 +148,7 @@ func listen(conn net.PacketConn, tlsConf *tls.Config, config *Config) (*server, 
 		}
 	}
 
-	sessionHandler, err := getMultiplexer().AddConn(conn, config.ConnectionIDLength)
+	sessionHandler, err := getMultiplexer().AddConn(conn, config.ConnectionIDLength, config.StatelessResetKey)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +172,7 @@ func listen(conn net.PacketConn, tlsConf *tls.Config, config *Config) (*server, 
 
 func (s *server) setup() error {
 	s.sessionRunner = &runner{
+		packetHandlerManager: s.sessionHandler,
 		onHandshakeCompleteImpl: func(sess Session) {
 			go func() {
 				atomic.AddInt32(&s.sessionQueueLen, 1)
@@ -180,8 +185,6 @@ func (s *server) setup() error {
 				}
 			}()
 		},
-		retireConnectionIDImpl: s.sessionHandler.Retire,
-		removeConnectionIDImpl: s.sessionHandler.Remove,
 	}
 	cookieGenerator, err := handshake.NewCookieGenerator()
 	if err != nil {
@@ -268,6 +271,7 @@ func populateServerConfig(config *Config) *Config {
 		MaxIncomingStreams:                    maxIncomingStreams,
 		MaxIncomingUniStreams:                 maxIncomingUniStreams,
 		ConnectionIDLength:                    connIDLen,
+		StatelessResetKey:                     config.StatelessResetKey,
 	}
 }
 
@@ -324,47 +328,60 @@ func (s *server) Addr() net.Addr {
 }
 
 func (s *server) handlePacket(p *receivedPacket) {
-	hdr := p.hdr
-
-	// send a Version Negotiation Packet if the client is speaking a different protocol version
-	if !protocol.IsSupportedVersion(s.config.Versions, hdr.Version) {
-		go s.sendVersionNegotiationPacket(p)
-		return
-	}
-	if hdr.Type == protocol.PacketTypeInitial {
-		go s.handleInitial(p)
-		return
-	}
-
-	// TODO(#943): send Stateless Reset
-	p.buffer.Release()
+	go func() {
+		if shouldReleaseBuffer := s.handlePacketImpl(p); !shouldReleaseBuffer {
+			p.buffer.Release()
+		}
+	}()
 }
 
-func (s *server) handleInitial(p *receivedPacket) {
-	s.logger.Debugf("<- Received Initial packet.")
-	sess, connID, err := s.handleInitialImpl(p)
+func (s *server) handlePacketImpl(p *receivedPacket) bool /* was the packet passed on to a session */ {
+	if len(p.data) < protocol.MinInitialPacketSize {
+		s.logger.Debugf("Dropping a packet that is too small to be a valid Initial (%d bytes)", len(p.data))
+		return false
+	}
+	// If we're creating a new session, the packet will be passed to the session.
+	// The header will then be parsed again.
+	hdr, _, _, err := wire.ParsePacket(p.data, s.config.ConnectionIDLength)
 	if err != nil {
-		p.buffer.Release()
+		s.logger.Debugf("Error parsing packet: %s", err)
+		return false
+	}
+	// Short header packets should never end up here in the first place
+	if !hdr.IsLongHeader {
+		return false
+	}
+	// send a Version Negotiation Packet if the client is speaking a different protocol version
+	if !protocol.IsSupportedVersion(s.config.Versions, hdr.Version) {
+		s.sendVersionNegotiationPacket(p, hdr)
+		return false
+	}
+	if hdr.IsLongHeader && hdr.Type != protocol.PacketTypeInitial {
+		// Drop long header packets.
+		// There's litte point in sending a Stateless Reset, since the client
+		// might not have received the token yet.
+		return false
+	}
+
+	s.logger.Debugf("<- Received Initial packet.")
+
+	sess, connID, err := s.handleInitialImpl(p, hdr)
+	if err != nil {
 		s.logger.Errorf("Error occurred handling initial packet: %s", err)
-		return
+		return false
 	}
 	if sess == nil { // a retry was done, or the connection attempt was rejected
-		p.buffer.Release()
-		return
+		return false
 	}
 	// Don't put the packet buffer back if a new session was created.
 	// The session will handle the packet and take of that.
-	serverSession := newServerSession(sess, s.config, s.logger)
-	s.sessionHandler.Add(connID, serverSession)
+	s.sessionHandler.Add(connID, sess)
+	return true
 }
 
-func (s *server) handleInitialImpl(p *receivedPacket) (quicSession, protocol.ConnectionID, error) {
-	hdr := p.hdr
+func (s *server) handleInitialImpl(p *receivedPacket, hdr *wire.Header) (quicSession, protocol.ConnectionID, error) {
 	if len(hdr.Token) == 0 && hdr.DestConnectionID.Len() < protocol.MinConnectionIDLenInitial {
-		return nil, nil, errors.New("dropping Initial packet with too short connection ID")
-	}
-	if len(p.data) < protocol.MinInitialPacketSize {
-		return nil, nil, errors.New("dropping too small Initial packet")
+		return nil, nil, errors.New("too short connection ID")
 	}
 
 	var cookie *Cookie
@@ -382,7 +399,7 @@ func (s *server) handleInitialImpl(p *receivedPacket) (quicSession, protocol.Con
 	if !s.config.AcceptCookie(p.remoteAddr, cookie) {
 		// Log the Initial packet now.
 		// If no Retry is sent, the packet will be logged by the session.
-		(&wire.ExtendedHeader{Header: *p.hdr}).Log(s.logger)
+		(&wire.ExtendedHeader{Header: *hdr}).Log(s.logger)
 		return nil, nil, s.sendRetry(p.remoteAddr, hdr)
 	}
 
@@ -419,6 +436,7 @@ func (s *server) createNewSession(
 	srcConnID protocol.ConnectionID,
 	version protocol.VersionNumber,
 ) (quicSession, error) {
+	token := s.sessionHandler.GetStatelessResetToken(srcConnID)
 	params := &handshake.TransportParameters{
 		InitialMaxStreamDataBidiLocal:  protocol.InitialMaxStreamData,
 		InitialMaxStreamDataBidiRemote: protocol.InitialMaxStreamData,
@@ -429,9 +447,8 @@ func (s *server) createNewSession(
 		MaxUniStreams:                  uint64(s.config.MaxIncomingUniStreams),
 		AckDelayExponent:               protocol.AckDelayExponent,
 		DisableMigration:               true,
-		// TODO(#855): generate a real token
-		StatelessResetToken:  bytes.Repeat([]byte{42}, 16),
-		OriginalConnectionID: origDestConnID,
+		StatelessResetToken:            &token,
+		OriginalConnectionID:           origDestConnID,
 	}
 	sess, err := s.newSession(
 		&conn{pconn: s.conn, currentAddr: remoteAddr},
@@ -490,8 +507,7 @@ func (s *server) sendServerBusy(remoteAddr net.Addr, hdr *wire.Header) error {
 	defer packetBuffer.Release()
 	buf := bytes.NewBuffer(packetBuffer.Slice[:0])
 
-	// TODO(#1567): use the SERVER_BUSY error code
-	ccf := &wire.ConnectionCloseFrame{ErrorCode: qerr.PeerGoingAway}
+	ccf := &wire.ConnectionCloseFrame{ErrorCode: qerr.ServerBusy}
 
 	replyHdr := &wire.ExtendedHeader{}
 	replyHdr.IsLongHeader = true
@@ -529,9 +545,7 @@ func (s *server) sendServerBusy(remoteAddr net.Addr, hdr *wire.Header) error {
 	return nil
 }
 
-func (s *server) sendVersionNegotiationPacket(p *receivedPacket) {
-	defer p.buffer.Release()
-	hdr := p.hdr
+func (s *server) sendVersionNegotiationPacket(p *receivedPacket, hdr *wire.Header) {
 	s.logger.Debugf("Client offered version %s, sending Version Negotiation", hdr.Version)
 	data, err := wire.ComposeVersionNegotiation(hdr.SrcConnectionID, hdr.DestConnectionID, s.config.Versions)
 	if err != nil {

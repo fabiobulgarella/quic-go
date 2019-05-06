@@ -49,6 +49,10 @@ func (m *outgoingUniStreamsMap) OpenStream() (sendStreamI, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
+	if m.closeErr != nil {
+		return nil, m.closeErr
+	}
+
 	str, err := m.openStreamImpl()
 	if err != nil {
 		return nil, streamOpenErr{err}
@@ -61,6 +65,9 @@ func (m *outgoingUniStreamsMap) OpenStreamSync() (sendStreamI, error) {
 	defer m.mutex.Unlock()
 
 	for {
+		if m.closeErr != nil {
+			return nil, m.closeErr
+		}
 		str, err := m.openStreamImpl()
 		if err == nil {
 			return str, nil
@@ -73,9 +80,6 @@ func (m *outgoingUniStreamsMap) OpenStreamSync() (sendStreamI, error) {
 }
 
 func (m *outgoingUniStreamsMap) openStreamImpl() (sendStreamI, error) {
-	if m.closeErr != nil {
-		return nil, m.closeErr
-	}
 	if !m.maxStreamSet || m.nextStream > m.maxStream {
 		if !m.blockedSent {
 			if m.maxStreamSet {
@@ -103,7 +107,7 @@ func (m *outgoingUniStreamsMap) GetStream(id protocol.StreamID) (sendStreamI, er
 	m.mutex.RLock()
 	if id >= m.nextStream {
 		m.mutex.RUnlock()
-		return nil, qerr.Error(qerr.InvalidStreamID, fmt.Sprintf("peer attempted to open stream %d", id))
+		return nil, qerr.Error(qerr.StreamStateError, fmt.Sprintf("peer attempted to open stream %d", id))
 	}
 	s := m.streams[id]
 	m.mutex.RUnlock()

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io/ioutil"
 	"math/big"
 	"time"
@@ -65,6 +66,45 @@ var _ = Describe("Crypto Setup TLS", func() {
 		}
 	})
 
+	It("creates a qtls.Config", func() {
+		tlsConf := &tls.Config{
+			ServerName: "quic.clemente.io",
+			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return nil, errors.New("GetCertificate")
+			},
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return nil, errors.New("GetClientCertificate")
+			},
+			GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
+				return &tls.Config{ServerName: ch.ServerName}, nil
+			},
+		}
+		server, err := NewCryptoSetupServer(
+			&bytes.Buffer{},
+			&bytes.Buffer{},
+			ioutil.Discard,
+			protocol.ConnectionID{},
+			nil,
+			&TransportParameters{},
+			func([]byte) {},
+			tlsConf,
+			utils.DefaultLogger.WithPrefix("server"),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		qtlsConf := server.(*cryptoSetup).tlsConf
+		Expect(qtlsConf.ServerName).To(Equal(tlsConf.ServerName))
+		_, getCertificateErr := qtlsConf.GetCertificate(nil)
+		Expect(getCertificateErr).To(MatchError("GetCertificate"))
+		_, getClientCertificateErr := qtlsConf.GetClientCertificate(nil)
+		Expect(getClientCertificateErr).To(MatchError("GetClientCertificate"))
+		cconf, err := qtlsConf.GetConfigForClient(&tls.ClientHelloInfo{ServerName: "foo.bar"})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(cconf.ServerName).To(Equal("foo.bar"))
+		Expect(cconf.AlternativeRecordLayer).ToNot(BeNil())
+		Expect(cconf.GetExtensions).ToNot(BeNil())
+		Expect(cconf.ReceivedExtensions).ToNot(BeNil())
+	})
+
 	It("returns Handshake() when an error occurs", func() {
 		_, sInitialStream, sHandshakeStream := initStreams()
 		server, err := NewCryptoSetupServer(
@@ -72,10 +112,8 @@ var _ = Describe("Crypto Setup TLS", func() {
 			sHandshakeStream,
 			ioutil.Discard,
 			protocol.ConnectionID{},
-			&EncryptedExtensionsTransportParameters{
-				NegotiatedVersion: protocol.VersionTLS,
-				SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
-			},
+			nil,
+			&TransportParameters{},
 			func([]byte) {},
 			testdata.GetTLSConfig(),
 			utils.DefaultLogger.WithPrefix("server"),
@@ -86,13 +124,18 @@ var _ = Describe("Crypto Setup TLS", func() {
 		go func() {
 			defer GinkgoRecover()
 			err := server.RunHandshake()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("received unexpected handshake message"))
+			Expect(err).To(MatchError("CRYPTO_ERROR: local error: tls: unexpected message"))
 			close(done)
 		}()
 
 		fakeCH := append([]byte{byte(typeClientHello), 0, 0, 6}, []byte("foobar")...)
-		server.HandleMessage(fakeCH, protocol.EncryptionInitial)
+		handledMessage := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			server.HandleMessage(fakeCH, protocol.EncryptionInitial)
+			close(handledMessage)
+		}()
+		Eventually(handledMessage).Should(BeClosed())
 		Eventually(done).Should(BeClosed())
 	})
 
@@ -103,10 +146,8 @@ var _ = Describe("Crypto Setup TLS", func() {
 			sHandshakeStream,
 			ioutil.Discard,
 			protocol.ConnectionID{},
-			&EncryptedExtensionsTransportParameters{
-				NegotiatedVersion: protocol.VersionTLS,
-				SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
-			},
+			nil,
+			&TransportParameters{},
 			func([]byte) {},
 			testdata.GetTLSConfig(),
 			utils.DefaultLogger.WithPrefix("server"),
@@ -133,10 +174,8 @@ var _ = Describe("Crypto Setup TLS", func() {
 			sHandshakeStream,
 			ioutil.Discard,
 			protocol.ConnectionID{},
-			&EncryptedExtensionsTransportParameters{
-				NegotiatedVersion: protocol.VersionTLS,
-				SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
-			},
+			nil,
+			&TransportParameters{},
 			func([]byte) {},
 			testdata.GetTLSConfig(),
 			utils.DefaultLogger.WithPrefix("server"),
@@ -214,9 +253,8 @@ var _ = Describe("Crypto Setup TLS", func() {
 				cHandshakeStream,
 				ioutil.Discard,
 				protocol.ConnectionID{},
-				&ClientHelloTransportParameters{
-					InitialVersion: protocol.VersionTLS,
-				},
+				nil,
+				&TransportParameters{},
 				func([]byte) {},
 				clientConf,
 				utils.DefaultLogger.WithPrefix("client"),
@@ -224,16 +262,14 @@ var _ = Describe("Crypto Setup TLS", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			sChunkChan, sInitialStream, sHandshakeStream := initStreams()
+			var token [16]byte
 			server, err := NewCryptoSetupServer(
 				sInitialStream,
 				sHandshakeStream,
 				ioutil.Discard,
 				protocol.ConnectionID{},
-				&EncryptedExtensionsTransportParameters{
-					NegotiatedVersion: protocol.VersionTLS,
-					SupportedVersions: []protocol.VersionNumber{protocol.VersionTLS},
-					Parameters:        TransportParameters{StatelessResetToken: bytes.Repeat([]byte{42}, 16)},
-				},
+				nil,
+				&TransportParameters{StatelessResetToken: &token},
 				func([]byte) {},
 				serverConf,
 				utils.DefaultLogger.WithPrefix("server"),
@@ -245,6 +281,14 @@ var _ = Describe("Crypto Setup TLS", func() {
 
 		It("handshakes", func() {
 			serverConf := testdata.GetTLSConfig()
+			clientErr, serverErr := handshakeWithTLSConf(clientConf, serverConf)
+			Expect(clientErr).ToNot(HaveOccurred())
+			Expect(serverErr).ToNot(HaveOccurred())
+		})
+
+		It("performs a HelloRetryRequst", func() {
+			serverConf := testdata.GetTLSConfig()
+			serverConf.CurvePreferences = []tls.CurveID{tls.CurveP384}
 			clientErr, serverErr := handshakeWithTLSConf(clientConf, serverConf)
 			Expect(clientErr).ToNot(HaveOccurred())
 			Expect(serverErr).ToNot(HaveOccurred())
@@ -266,9 +310,8 @@ var _ = Describe("Crypto Setup TLS", func() {
 				cHandshakeStream,
 				ioutil.Discard,
 				protocol.ConnectionID{},
-				&ClientHelloTransportParameters{
-					InitialVersion: protocol.VersionTLS,
-				},
+				nil,
+				&TransportParameters{},
 				func([]byte) {},
 				&tls.Config{InsecureSkipVerify: true},
 				utils.DefaultLogger.WithPrefix("client"),
@@ -304,7 +347,8 @@ var _ = Describe("Crypto Setup TLS", func() {
 				cHandshakeStream,
 				ioutil.Discard,
 				protocol.ConnectionID{},
-				&ClientHelloTransportParameters{Parameters: *cTransportParameters},
+				nil,
+				cTransportParameters,
 				func(p []byte) { sTransportParametersRcvd = p },
 				clientConf,
 				utils.DefaultLogger.WithPrefix("client"),
@@ -312,16 +356,18 @@ var _ = Describe("Crypto Setup TLS", func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			sChunkChan, sInitialStream, sHandshakeStream := initStreams()
+			var token [16]byte
 			sTransportParameters := &TransportParameters{
 				IdleTimeout:         0x1337 * time.Second,
-				StatelessResetToken: bytes.Repeat([]byte{42}, 16),
+				StatelessResetToken: &token,
 			}
 			server, err := NewCryptoSetupServer(
 				sInitialStream,
 				sHandshakeStream,
 				ioutil.Discard,
 				protocol.ConnectionID{},
-				&EncryptedExtensionsTransportParameters{Parameters: *sTransportParameters},
+				nil,
+				sTransportParameters,
 				func(p []byte) { cTransportParametersRcvd = p },
 				testdata.GetTLSConfig(),
 				utils.DefaultLogger.WithPrefix("server"),
@@ -338,13 +384,13 @@ var _ = Describe("Crypto Setup TLS", func() {
 			}()
 			Eventually(done).Should(BeClosed())
 			Expect(cTransportParametersRcvd).ToNot(BeNil())
-			chtp := &ClientHelloTransportParameters{}
-			Expect(chtp.Unmarshal(cTransportParametersRcvd)).To(Succeed())
-			Expect(chtp.Parameters.IdleTimeout).To(Equal(cTransportParameters.IdleTimeout))
+			clTP := &TransportParameters{}
+			Expect(clTP.Unmarshal(cTransportParametersRcvd, protocol.PerspectiveClient)).To(Succeed())
+			Expect(clTP.IdleTimeout).To(Equal(cTransportParameters.IdleTimeout))
 			Expect(sTransportParametersRcvd).ToNot(BeNil())
-			eetp := &EncryptedExtensionsTransportParameters{}
-			Expect(eetp.Unmarshal(sTransportParametersRcvd)).To(Succeed())
-			Expect(eetp.Parameters.IdleTimeout).To(Equal(sTransportParameters.IdleTimeout))
+			srvTP := &TransportParameters{}
+			Expect(srvTP.Unmarshal(sTransportParametersRcvd, protocol.PerspectiveServer)).To(Succeed())
+			Expect(srvTP.IdleTimeout).To(Equal(sTransportParameters.IdleTimeout))
 		})
 	})
 })

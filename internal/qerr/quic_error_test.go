@@ -7,37 +7,62 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Quic error", func() {
-	Context("QuicError", func() {
-		It("has a string representation", func() {
-			err := Error(DecryptionFailure, "foobar")
-			Expect(err.Error()).To(Equal("DecryptionFailure: foobar"))
+var _ = Describe("QUIC Transport Errors", func() {
+	It("has a string representation", func() {
+		err := Error(FlowControlError, "foobar")
+		Expect(err.Timeout()).To(BeFalse())
+		Expect(err.Error()).To(Equal("FLOW_CONTROL_ERROR: foobar"))
+	})
+
+	It("has a string representation for empty error phrases", func() {
+		err := Error(FlowControlError, "")
+		Expect(err.Error()).To(Equal("FLOW_CONTROL_ERROR"))
+	})
+
+	It("has a string representation for timeout errors", func() {
+		err := TimeoutError("foobar")
+		Expect(err.Timeout()).To(BeTrue())
+		Expect(err.Error()).To(Equal("NO_ERROR: foobar"))
+	})
+
+	Context("crypto errors", func() {
+		It("has a string representation for crypto errors with a message", func() {
+			err := CryptoError(42, "foobar")
+			Expect(err.Error()).To(Equal("CRYPTO_ERROR: foobar"))
+		})
+
+		It("has a string representation for crypto errors without a message", func() {
+			err := CryptoError(42, "")
+			Expect(err.Error()).To(Equal("CRYPTO_ERROR: tls: bad certificate"))
+		})
+
+		It("says if an error is a crypto error", func() {
+			Expect(Error(FlowControlError, "").IsCryptoError()).To(BeFalse())
+			Expect(CryptoError(42, "").IsCryptoError()).To(BeTrue())
 		})
 	})
 
 	Context("ErrorCode", func() {
 		It("works as error", func() {
-			var err error = DecryptionFailure
-			Expect(err).To(MatchError("DecryptionFailure"))
+			var err error = StreamStateError
+			Expect(err).To(MatchError("STREAM_STATE_ERROR"))
 		})
-	})
 
-	Context("TimeoutError", func() {
-		It("works as timeout error", func() {
-			err := Error(HandshakeTimeout, "handshake timeout")
-			Expect(err.Timeout()).Should(BeTrue())
+		It("recognizes crypto errors", func() {
+			err := ErrorCode(0x100 + 42)
+			Expect(err.Error()).To(Equal("CRYPTO_ERROR: tls: bad certificate"))
 		})
 	})
 
 	Context("ToQuicError", func() {
 		It("leaves QuicError unchanged", func() {
-			err := Error(DecryptionFailure, "foo")
+			err := Error(TransportParameterError, "foo")
 			Expect(ToQuicError(err)).To(Equal(err))
 		})
 
 		It("wraps ErrorCode properly", func() {
-			var err error = DecryptionFailure
-			Expect(ToQuicError(err)).To(Equal(Error(DecryptionFailure, "")))
+			var err error = FinalSizeError
+			Expect(ToQuicError(err)).To(Equal(Error(FinalSizeError, "")))
 		})
 
 		It("changes default errors to InternalError", func() {

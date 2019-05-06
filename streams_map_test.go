@@ -222,7 +222,7 @@ var _ = Describe("Streams Map", func() {
 					It("errors when the peer tries to open a higher outgoing bidirectional stream", func() {
 						id := ids.firstOutgoingBidiStream + 5*4
 						_, err := m.GetOrOpenSendStream(id)
-						Expect(err).To(MatchError(qerr.Error(qerr.InvalidStreamID, fmt.Sprintf("peer attempted to open stream %d", id))))
+						Expect(err).To(MatchError(qerr.Error(qerr.StreamStateError, fmt.Sprintf("peer attempted to open stream %d", id))))
 					})
 
 					It("gets an outgoing unidirectional stream", func() {
@@ -238,7 +238,7 @@ var _ = Describe("Streams Map", func() {
 					It("errors when the peer tries to open a higher outgoing bidirectional stream", func() {
 						id := ids.firstOutgoingUniStream + 5*4
 						_, err := m.GetOrOpenSendStream(id)
-						Expect(err).To(MatchError(qerr.Error(qerr.InvalidStreamID, fmt.Sprintf("peer attempted to open stream %d", id))))
+						Expect(err).To(MatchError(qerr.Error(qerr.StreamStateError, fmt.Sprintf("peer attempted to open stream %d", id))))
 					})
 
 					It("gets an incoming bidirectional stream", func() {
@@ -269,7 +269,7 @@ var _ = Describe("Streams Map", func() {
 					It("errors when the peer tries to open a higher outgoing bidirectional stream", func() {
 						id := ids.firstOutgoingBidiStream + 5*4
 						_, err := m.GetOrOpenReceiveStream(id)
-						Expect(err).To(MatchError(qerr.Error(qerr.InvalidStreamID, fmt.Sprintf("peer attempted to open stream %d", id))))
+						Expect(err).To(MatchError(qerr.Error(qerr.StreamStateError, fmt.Sprintf("peer attempted to open stream %d", id))))
 					})
 
 					It("gets an incoming bidirectional stream", func() {
@@ -295,32 +295,42 @@ var _ = Describe("Streams Map", func() {
 			})
 
 			Context("updating stream ID limits", func() {
-				BeforeEach(func() {
-					mockSender.EXPECT().queueControlFrame(gomock.Any())
-				})
-
 				It("processes the parameter for outgoing streams, as a server", func() {
+					mockSender.EXPECT().queueControlFrame(gomock.Any())
 					m.perspective = protocol.PerspectiveServer
 					_, err := m.OpenStream()
 					expectTooManyStreamsError(err)
-					m.UpdateLimits(&handshake.TransportParameters{
+					Expect(m.UpdateLimits(&handshake.TransportParameters{
 						MaxBidiStreams: 5,
 						MaxUniStreams:  5,
-					})
+					})).To(Succeed())
 					Expect(m.outgoingBidiStreams.maxStream).To(Equal(protocol.StreamID(17)))
 					Expect(m.outgoingUniStreams.maxStream).To(Equal(protocol.StreamID(19)))
 				})
 
 				It("processes the parameter for outgoing streams, as a client", func() {
+					mockSender.EXPECT().queueControlFrame(gomock.Any())
 					m.perspective = protocol.PerspectiveClient
 					_, err := m.OpenUniStream()
 					expectTooManyStreamsError(err)
-					m.UpdateLimits(&handshake.TransportParameters{
+					Expect(m.UpdateLimits(&handshake.TransportParameters{
 						MaxBidiStreams: 5,
 						MaxUniStreams:  5,
-					})
+					})).To(Succeed())
 					Expect(m.outgoingBidiStreams.maxStream).To(Equal(protocol.StreamID(16)))
 					Expect(m.outgoingUniStreams.maxStream).To(Equal(protocol.StreamID(18)))
+				})
+
+				It("rejects parameters with too large unidirectional stream counts", func() {
+					Expect(m.UpdateLimits(&handshake.TransportParameters{
+						MaxUniStreams: protocol.MaxStreamCount + 1,
+					})).To(MatchError(qerr.StreamLimitError))
+				})
+
+				It("rejects parameters with too large unidirectional stream counts", func() {
+					Expect(m.UpdateLimits(&handshake.TransportParameters{
+						MaxBidiStreams: protocol.MaxStreamCount + 1,
+					})).To(MatchError(qerr.StreamLimitError))
 				})
 			})
 
@@ -355,6 +365,13 @@ var _ = Describe("Streams Map", func() {
 					Expect(str.StreamID()).To(Equal(ids.firstOutgoingUniStream))
 					_, err = m.OpenUniStream()
 					expectTooManyStreamsError(err)
+				})
+
+				It("rejects MAX_STREAMS frames with too large values", func() {
+					Expect(m.HandleMaxStreamsFrame(&wire.MaxStreamsFrame{
+						Type:       protocol.StreamTypeBidi,
+						MaxStreams: protocol.MaxStreamCount + 1,
+					})).To(MatchError(qerr.StreamLimitError))
 				})
 			})
 

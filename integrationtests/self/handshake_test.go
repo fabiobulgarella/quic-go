@@ -7,6 +7,7 @@ import (
 	"time"
 
 	quic "github.com/lucas-clemente/quic-go"
+	"github.com/lucas-clemente/quic-go/integrationtests/tools/israce"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/qerr"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
@@ -23,12 +24,14 @@ var _ = Describe("Handshake tests", func() {
 		server        quic.Listener
 		serverConfig  *quic.Config
 		acceptStopped chan struct{}
+		tlsServerConf *tls.Config
 	)
 
 	BeforeEach(func() {
 		server = nil
 		acceptStopped = make(chan struct{})
 		serverConfig = &quic.Config{}
+		tlsServerConf = testdata.GetTLSConfig()
 	})
 
 	AfterEach(func() {
@@ -41,7 +44,7 @@ var _ = Describe("Handshake tests", func() {
 	runServer := func() quic.Listener {
 		var err error
 		// start the server
-		server, err = quic.ListenAddr("localhost:0", testdata.GetTLSConfig(), serverConfig)
+		server, err = quic.ListenAddr("localhost:0", tlsServerConf, serverConfig)
 		Expect(err).ToNot(HaveOccurred())
 
 		go func() {
@@ -56,45 +59,47 @@ var _ = Describe("Handshake tests", func() {
 		return server
 	}
 
-	Context("Version Negotiation", func() {
-		var supportedVersions []protocol.VersionNumber
+	if !israce.Enabled {
+		Context("Version Negotiation", func() {
+			var supportedVersions []protocol.VersionNumber
 
-		BeforeEach(func() {
-			supportedVersions = protocol.SupportedVersions
-			protocol.SupportedVersions = append(protocol.SupportedVersions, []protocol.VersionNumber{7, 8, 9, 10}...)
-		})
+			BeforeEach(func() {
+				supportedVersions = protocol.SupportedVersions
+				protocol.SupportedVersions = append(protocol.SupportedVersions, []protocol.VersionNumber{7, 8, 9, 10}...)
+			})
 
-		AfterEach(func() {
-			protocol.SupportedVersions = supportedVersions
-		})
+			AfterEach(func() {
+				protocol.SupportedVersions = supportedVersions
+			})
 
-		It("when the server supports more versions than the client", func() {
-			// the server doesn't support the highest supported version, which is the first one the client will try
-			// but it supports a bunch of versions that the client doesn't speak
-			serverConfig.Versions = []protocol.VersionNumber{7, 8, protocol.SupportedVersions[0], 9}
-			server := runServer()
-			defer server.Close()
-			sess, err := quic.DialAddr(server.Addr().String(), &tls.Config{InsecureSkipVerify: true}, nil)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(sess.(versioner).GetVersion()).To(Equal(protocol.SupportedVersions[0]))
-			Expect(sess.Close()).To(Succeed())
-		})
+			It("when the server supports more versions than the client", func() {
+				// the server doesn't support the highest supported version, which is the first one the client will try
+				// but it supports a bunch of versions that the client doesn't speak
+				serverConfig.Versions = []protocol.VersionNumber{7, 8, protocol.SupportedVersions[0], 9}
+				server := runServer()
+				defer server.Close()
+				sess, err := quic.DialAddr(server.Addr().String(), &tls.Config{InsecureSkipVerify: true}, nil)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(sess.(versioner).GetVersion()).To(Equal(protocol.SupportedVersions[0]))
+				Expect(sess.Close()).To(Succeed())
+			})
 
-		It("when the client supports more versions than the server supports", func() {
-			// the server doesn't support the highest supported version, which is the first one the client will try
-			// but it supports a bunch of versions that the client doesn't speak
-			serverConfig.Versions = supportedVersions
-			server := runServer()
-			defer server.Close()
-			conf := &quic.Config{
-				Versions: []protocol.VersionNumber{7, 8, 9, protocol.SupportedVersions[0], 10},
-			}
-			sess, err := quic.DialAddr(server.Addr().String(), &tls.Config{InsecureSkipVerify: true}, conf)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(sess.(versioner).GetVersion()).To(Equal(protocol.SupportedVersions[0]))
-			Expect(sess.Close()).To(Succeed())
+			It("when the client supports more versions than the server supports", func() {
+				// the server doesn't support the highest supported version, which is the first one the client will try
+				// but it supports a bunch of versions that the client doesn't speak
+				serverConfig.Versions = supportedVersions
+				server := runServer()
+				defer server.Close()
+				conf := &quic.Config{
+					Versions: []protocol.VersionNumber{7, 8, 9, protocol.SupportedVersions[0], 10},
+				}
+				sess, err := quic.DialAddr(server.Addr().String(), &tls.Config{InsecureSkipVerify: true}, conf)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(sess.(versioner).GetVersion()).To(Equal(protocol.SupportedVersions[0]))
+				Expect(sess.Close()).To(Succeed())
+			})
 		})
-	})
+	}
 
 	Context("Certifiate validation", func() {
 		for _, v := range protocol.SupportedVersions {
@@ -114,8 +119,11 @@ var _ = Describe("Handshake tests", func() {
 					}
 				})
 
-				It("accepts the certificate", func() {
+				JustBeforeEach(func() {
 					runServer()
+				})
+
+				It("accepts the certificate", func() {
 					_, err := quic.DialAddr(
 						fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
 						tlsConf,
@@ -125,17 +133,37 @@ var _ = Describe("Handshake tests", func() {
 				})
 
 				It("errors if the server name doesn't match", func() {
-					runServer()
 					_, err := quic.DialAddr(
 						fmt.Sprintf("127.0.0.1:%d", server.Addr().(*net.UDPAddr).Port),
 						tlsConf,
 						clientConfig,
 					)
-					Expect(err).To(HaveOccurred())
+					Expect(err).To(MatchError("CRYPTO_ERROR: x509: cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs"))
+				})
+
+				It("fails the handshake if the client fails to provide the requested client cert", func() {
+					tlsServerConf.ClientAuth = tls.RequireAndVerifyClientCert
+					sess, err := quic.DialAddr(
+						fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
+						tlsConf,
+						clientConfig,
+					)
+					// Usually, the error will occur after the client already finished the handshake.
+					// However, there's a race condition here. The server's CONNECTION_CLOSE might be
+					// received before the session is returned, so we might already get the error while dialing.
+					if err == nil {
+						errChan := make(chan error)
+						go func() {
+							defer GinkgoRecover()
+							_, err := sess.AcceptStream()
+							errChan <- err
+						}()
+						Eventually(errChan).Should(Receive(&err))
+					}
+					Expect(err).To(MatchError("CRYPTO_ERROR: tls: bad certificate"))
 				})
 
 				It("uses the ServerName in the tls.Config", func() {
-					runServer()
 					tlsConf.ServerName = "localhost"
 					_, err := quic.DialAddr(
 						fmt.Sprintf("127.0.0.1:%d", server.Addr().(*net.UDPAddr).Port),
@@ -181,8 +209,7 @@ var _ = Describe("Handshake tests", func() {
 
 			_, err := dial()
 			Expect(err).To(HaveOccurred())
-			// TODO(#1567): use the SERVER_BUSY error code
-			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.PeerGoingAway))
+			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.ServerBusy))
 
 			// now accept one session, freeing one spot in the queue
 			_, err = server.Accept()
@@ -195,8 +222,7 @@ var _ = Describe("Handshake tests", func() {
 
 			_, err = dial()
 			Expect(err).To(HaveOccurred())
-			// TODO(#1567): use the SERVER_BUSY error code
-			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.PeerGoingAway))
+			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.ServerBusy))
 		})
 
 		It("rejects new connection attempts if connections don't get accepted", func() {
@@ -212,8 +238,7 @@ var _ = Describe("Handshake tests", func() {
 
 			_, err = dial()
 			Expect(err).To(HaveOccurred())
-			// TODO(#1567): use the SERVER_BUSY error code
-			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.PeerGoingAway))
+			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.ServerBusy))
 
 			// Now close the one of the session that are waiting to be accepted.
 			// This should free one spot in the queue.
@@ -226,8 +251,7 @@ var _ = Describe("Handshake tests", func() {
 			time.Sleep(25 * time.Millisecond) // wait a bit for the session to be queued
 
 			_, err = dial()
-			// TODO(#1567): use the SERVER_BUSY error code
-			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.PeerGoingAway))
+			Expect(err.(*qerr.QuicError).ErrorCode).To(Equal(qerr.ServerBusy))
 		})
 
 	})

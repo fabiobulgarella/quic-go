@@ -9,7 +9,6 @@ import (
 
 	"github.com/lucas-clemente/quic-go/internal/handshake"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/qerr"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 )
@@ -121,7 +120,7 @@ func dialContext(
 	createdPacketConn bool,
 ) (Session, error) {
 	config = populateClientConfig(config, createdPacketConn)
-	packetHandlers, err := getMultiplexer().AddConn(pconn, config.ConnectionIDLength)
+	packetHandlers, err := getMultiplexer().AddConn(pconn, config.ConnectionIDLength, config.StatelessResetKey)
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +240,7 @@ func populateClientConfig(config *Config, createdPacketConn bool) *Config {
 		MaxIncomingStreams:                    maxIncomingStreams,
 		MaxIncomingUniStreams:                 maxIncomingUniStreams,
 		KeepAlive:                             config.KeepAlive,
+		StatelessResetKey:                     config.StatelessResetKey,
 	}
 }
 
@@ -287,8 +287,8 @@ func (c *client) establishSecureConnection(ctx context.Context) error {
 }
 
 func (c *client) handlePacket(p *receivedPacket) {
-	if p.hdr.IsVersionNegotiation() {
-		go c.handleVersionNegotiationPacket(p.hdr)
+	if wire.IsVersionNegotiationPacket(p.data) {
+		go c.handleVersionNegotiationPacket(p)
 		return
 	}
 
@@ -301,9 +301,15 @@ func (c *client) handlePacket(p *receivedPacket) {
 	c.session.handlePacket(p)
 }
 
-func (c *client) handleVersionNegotiationPacket(hdr *wire.Header) {
+func (c *client) handleVersionNegotiationPacket(p *receivedPacket) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	hdr, _, _, err := wire.ParsePacket(p.data, 0)
+	if err != nil {
+		c.logger.Debugf("Error parsing Version Negotiation packet: %s", err)
+		return
+	}
 
 	// ignore delayed / duplicated version negotiation packets
 	if c.receivedVersionNegotiationPacket || c.versionNegotiated.Get() {
@@ -322,8 +328,8 @@ func (c *client) handleVersionNegotiationPacket(hdr *wire.Header) {
 	c.logger.Infof("Received a Version Negotiation packet. Supported Versions: %s", hdr.SupportedVersions)
 	newVersion, ok := protocol.ChooseSupportedVersion(c.config.Versions, hdr.SupportedVersions)
 	if !ok {
-		c.session.destroy(qerr.InvalidVersion)
-		c.logger.Debugf("No compatible version found.")
+		c.session.destroy(fmt.Errorf("No compatible QUIC version found. We support %s, server offered %s", c.config.Versions, hdr.SupportedVersions))
+		c.logger.Debugf("No compatible QUIC version found.")
 		return
 	}
 	c.receivedVersionNegotiationPacket = true
@@ -353,9 +359,8 @@ func (c *client) createNewTLSSession(version protocol.VersionNumber) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	runner := &runner{
+		packetHandlerManager:    c.packetHandlers,
 		onHandshakeCompleteImpl: func(_ Session) { close(c.handshakeChan) },
-		retireConnectionIDImpl:  c.packetHandlers.Retire,
-		removeConnectionIDImpl:  c.packetHandlers.Remove,
 	}
 	sess, err := newClientSession(
 		c.conn,
@@ -403,6 +408,6 @@ func (c *client) GetVersion() protocol.VersionNumber {
 	return v
 }
 
-func (c *client) GetPerspective() protocol.Perspective {
+func (c *client) getPerspective() protocol.Perspective {
 	return protocol.PerspectiveClient
 }

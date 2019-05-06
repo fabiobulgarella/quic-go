@@ -2,11 +2,11 @@ package quic
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"time"
 
-	"github.com/lucas-clemente/quic-go/internal/handshake"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 )
 
@@ -22,9 +22,6 @@ type Cookie struct {
 	SentTime   time.Time
 }
 
-// ConnectionState records basic details about the QUIC connection.
-type ConnectionState = handshake.ConnectionState
-
 // An ErrorCode is an application-defined error code.
 type ErrorCode = protocol.ApplicationErrorCode
 
@@ -37,12 +34,16 @@ type Stream interface {
 	// after a fixed time limit; see SetDeadline and SetReadDeadline.
 	// If the stream was canceled by the peer, the error implements the StreamError
 	// interface, and Canceled() == true.
+	// If the session was closed due to a timeout, the error satisfies
+	// the net.Error interface, and Timeout() will be true.
 	io.Reader
 	// Write writes data to the stream.
 	// Write can be made to time out and return a net.Error with Timeout() == true
 	// after a fixed time limit; see SetDeadline and SetWriteDeadline.
 	// If the stream was canceled by the peer, the error implements the StreamError
 	// interface, and Canceled() == true.
+	// If the session was closed due to a timeout, the error satisfies
+	// the net.Error interface, and Timeout() will be true.
 	io.Writer
 	// Close closes the write-direction of the stream.
 	// Future calls to Write are not permitted after calling Close.
@@ -60,7 +61,8 @@ type Stream interface {
 	// When called multiple times or after reading the io.EOF it is a no-op.
 	CancelRead(ErrorCode)
 	// The context is canceled as soon as the write-side of the stream is closed.
-	// This happens when Close() is called, or when the stream is reset (either locally or remotely).
+	// This happens when Close() or CancelWrite() is called, or when the peer
+	// cancels the read-side of their stream.
 	// Warning: This API should not be considered stable and might change soon.
 	Context() context.Context
 	// SetReadDeadline sets the deadline for future Read calls and
@@ -117,26 +119,34 @@ type StreamError interface {
 // A Session is a QUIC connection between two peers.
 type Session interface {
 	// AcceptStream returns the next stream opened by the peer, blocking until one is available.
+	// If the session was closed due to a timeout, the error satisfies
+	// the net.Error interface, and Timeout() will be true.
 	AcceptStream() (Stream, error)
 	// AcceptUniStream returns the next unidirectional stream opened by the peer, blocking until one is available.
+	// If the session was closed due to a timeout, the error satisfies
+	// the net.Error interface, and Timeout() will be true.
 	AcceptUniStream() (ReceiveStream, error)
 	// OpenStream opens a new bidirectional QUIC stream.
 	// There is no signaling to the peer about new streams:
 	// The peer can only accept the stream after data has been sent on the stream.
 	// If the error is non-nil, it satisfies the net.Error interface.
 	// When reaching the peer's stream limit, err.Temporary() will be true.
+	// If the session was closed due to a timeout, Timeout() will be true.
 	OpenStream() (Stream, error)
 	// OpenStreamSync opens a new bidirectional QUIC stream.
 	// It blocks until a new stream can be opened.
 	// If the error is non-nil, it satisfies the net.Error interface.
+	// If the session was closed due to a timeout, Timeout() will be true.
 	OpenStreamSync() (Stream, error)
 	// OpenUniStream opens a new outgoing unidirectional QUIC stream.
 	// If the error is non-nil, it satisfies the net.Error interface.
 	// When reaching the peer's stream limit, Temporary() will be true.
+	// If the session was closed due to a timeout, Timeout() will be true.
 	OpenUniStream() (SendStream, error)
 	// OpenUniStreamSync opens a new outgoing unidirectional QUIC stream.
 	// It blocks until a new stream can be opened.
 	// If the error is non-nil, it satisfies the net.Error interface.
+	// If the session was closed due to a timeout, Timeout() will be true.
 	OpenUniStreamSync() (SendStream, error)
 	// LocalAddr returns the local address.
 	LocalAddr() net.Addr
@@ -152,7 +162,7 @@ type Session interface {
 	Context() context.Context
 	// ConnectionState returns basic details about the QUIC connection.
 	// Warning: This API should not be considered stable and might change soon.
-	ConnectionState() ConnectionState
+	ConnectionState() tls.ConnectionState
 }
 
 // Config contains all configuration data needed for a QUIC server or client.
@@ -196,13 +206,16 @@ type Config struct {
 	// If not set, it will default to 100.
 	// If set to a negative value, it doesn't allow any unidirectional streams.
 	MaxIncomingUniStreams int
-	// KeepAlive defines whether this peer will periodically send PING frames to keep the connection alive.
+	// The StatelessResetKey is used to generate stateless reset tokens.
+	// If no key is configured, sending of stateless resets is disabled.
+	StatelessResetKey []byte
+	// KeepAlive defines whether this peer will periodically send a packet to keep the connection alive.
 	KeepAlive bool
 }
 
 // A Listener for incoming QUIC connections
 type Listener interface {
-	// Close the server, sending CONNECTION_CLOSE frames to each peer.
+	// Close the server. All active sessions will be closed.
 	Close() error
 	// Addr returns the local network addr that the server is listening on.
 	Addr() net.Addr

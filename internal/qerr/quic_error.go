@@ -2,20 +2,17 @@ package qerr
 
 import (
 	"fmt"
+	"net"
 )
-
-// ErrorCode can be used as a normal error without reason.
-type ErrorCode uint16
-
-func (e ErrorCode) Error() string {
-	return e.String()
-}
 
 // A QuicError consists of an error code plus a error reason
 type QuicError struct {
 	ErrorCode    ErrorCode
 	ErrorMessage string
+	isTimeout    bool
 }
+
+var _ net.Error = &QuicError{}
 
 // Error creates a new QuicError instance
 func Error(errorCode ErrorCode, errorMessage string) *QuicError {
@@ -25,19 +22,42 @@ func Error(errorCode ErrorCode, errorMessage string) *QuicError {
 	}
 }
 
+// TimeoutError creates a new QuicError instance for a timeout error
+func TimeoutError(errorMessage string) *QuicError {
+	return &QuicError{
+		ErrorMessage: errorMessage,
+		isTimeout:    true,
+	}
+}
+
+// CryptoError create a new QuicError instance for a crypto error
+func CryptoError(tlsAlert uint8, errorMessage string) *QuicError {
+	return &QuicError{
+		ErrorCode:    0x100 + ErrorCode(tlsAlert),
+		ErrorMessage: errorMessage,
+	}
+}
+
 func (e *QuicError) Error() string {
+	if len(e.ErrorMessage) == 0 {
+		return e.ErrorCode.Error()
+	}
 	return fmt.Sprintf("%s: %s", e.ErrorCode.String(), e.ErrorMessage)
+}
+
+// IsCryptoError says if this error is a crypto error
+func (e *QuicError) IsCryptoError() bool {
+	return e.ErrorCode.isCryptoError()
+}
+
+// Temporary says if the error is temporary.
+func (e *QuicError) Temporary() bool {
+	return false
 }
 
 // Timeout says if this error is a timeout.
 func (e *QuicError) Timeout() bool {
-	switch e.ErrorCode {
-	case NetworkIdleTimeout,
-		HandshakeTimeout,
-		TimeoutsWithOpenStreams:
-		return true
-	}
-	return false
+	return e.isTimeout
 }
 
 // ToQuicError converts an arbitrary error to a QuicError. It leaves QuicErrors
