@@ -1,18 +1,17 @@
 package self_test
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"net"
-	"os"
+	"runtime"
 	"time"
 
 	quic "github.com/lucas-clemente/quic-go"
 	"github.com/lucas-clemente/quic-go/integrationtests/tools/testlog"
 	"github.com/lucas-clemente/quic-go/integrationtests/tools/testserver"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -27,7 +26,7 @@ var _ = Describe("Multiplexing", func() {
 				go func() {
 					defer GinkgoRecover()
 					for {
-						sess, err := ln.Accept()
+						sess, err := ln.Accept(context.Background())
 						if err != nil {
 							return
 						}
@@ -48,11 +47,11 @@ var _ = Describe("Multiplexing", func() {
 					conn,
 					addr,
 					fmt.Sprintf("localhost:%d", addr.(*net.UDPAddr).Port),
-					&tls.Config{RootCAs: testdata.GetRootCA()},
+					getTLSClientConfig(),
 					&quic.Config{Versions: []protocol.VersionNumber{version}},
 				)
 				Expect(err).ToNot(HaveOccurred())
-				str, err := sess.AcceptStream()
+				str, err := sess.AcceptStream(context.Background())
 				Expect(err).ToNot(HaveOccurred())
 				data, err := ioutil.ReadAll(str)
 				Expect(err).ToNot(HaveOccurred())
@@ -63,7 +62,7 @@ var _ = Describe("Multiplexing", func() {
 				getListener := func() quic.Listener {
 					ln, err := quic.ListenAddr(
 						"localhost:0",
-						testdata.GetTLSConfig(),
+						getTLSConfig(),
 						&quic.Config{Versions: []protocol.VersionNumber{version}},
 					)
 					Expect(err).ToNot(HaveOccurred())
@@ -146,7 +145,7 @@ var _ = Describe("Multiplexing", func() {
 
 					server, err := quic.Listen(
 						conn,
-						testdata.GetTLSConfig(),
+						getTLSConfig(),
 						&quic.Config{Versions: []protocol.VersionNumber{version}},
 					)
 					Expect(err).ToNot(HaveOccurred())
@@ -165,8 +164,8 @@ var _ = Describe("Multiplexing", func() {
 				})
 
 				It("runs a server and client on the same conn", func() {
-					if os.Getenv("CI") == "true" {
-						Skip("This test is flaky on CIs, see see https://github.com/golang/go/issues/17677.")
+					if runtime.GOOS == "linux" {
+						Skip("This test would require setting of iptables rules, see https://stackoverflow.com/questions/23859164/linux-udp-socket-sendto-operation-not-permitted.")
 					}
 					addr1, err := net.ResolveUDPAddr("udp", "localhost:0")
 					Expect(err).ToNot(HaveOccurred())
@@ -182,7 +181,7 @@ var _ = Describe("Multiplexing", func() {
 
 					server1, err := quic.Listen(
 						conn1,
-						testdata.GetTLSConfig(),
+						getTLSConfig(),
 						&quic.Config{Versions: []protocol.VersionNumber{version}},
 					)
 					Expect(err).ToNot(HaveOccurred())
@@ -191,7 +190,7 @@ var _ = Describe("Multiplexing", func() {
 
 					server2, err := quic.Listen(
 						conn2,
-						testdata.GetTLSConfig(),
+						getTLSConfig(),
 						&quic.Config{Versions: []protocol.VersionNumber{version}},
 					)
 					Expect(err).ToNot(HaveOccurred())

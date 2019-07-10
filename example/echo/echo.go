@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -35,11 +36,11 @@ func echoServer() error {
 	if err != nil {
 		return err
 	}
-	sess, err := listener.Accept()
+	sess, err := listener.Accept(context.Background())
 	if err != nil {
 		return err
 	}
-	stream, err := sess.AcceptStream()
+	stream, err := sess.AcceptStream(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -49,12 +50,16 @@ func echoServer() error {
 }
 
 func clientMain() error {
-	session, err := quic.DialAddr(addr, &tls.Config{InsecureSkipVerify: true}, nil)
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"quic-echo-example"},
+	}
+	session, err := quic.DialAddr(addr, tlsConf, nil)
 	if err != nil {
 		return err
 	}
 
-	stream, err := session.OpenStreamSync()
+	stream, err := session.OpenStreamSync(context.Background())
 	if err != nil {
 		return err
 	}
@@ -101,5 +106,8 @@ func generateTLSConfig() *tls.Config {
 	if err != nil {
 		panic(err)
 	}
-	return &tls.Config{Certificates: []tls.Certificate{tlsCert}}
+	return &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"quic-echo-example"},
+	}
 }

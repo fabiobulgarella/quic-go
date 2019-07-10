@@ -1,7 +1,7 @@
 package self_test
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -11,7 +11,6 @@ import (
 	quicproxy "github.com/lucas-clemente/quic-go/integrationtests/tools/proxy"
 	"github.com/lucas-clemente/quic-go/integrationtests/tools/testserver"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -35,7 +34,7 @@ var _ = Describe("non-zero RTT", func() {
 				It(fmt.Sprintf("downloads a message with %s RTT", rtt), func() {
 					ln, err := quic.ListenAddr(
 						"localhost:0",
-						testdata.GetTLSConfig(),
+						getTLSConfig(),
 						&quic.Config{
 							Versions: []protocol.VersionNumber{version},
 						},
@@ -44,7 +43,7 @@ var _ = Describe("non-zero RTT", func() {
 					done := make(chan struct{})
 					go func() {
 						defer GinkgoRecover()
-						sess, err := ln.Accept()
+						sess, err := ln.Accept(context.Background())
 						Expect(err).ToNot(HaveOccurred())
 						str, err := sess.OpenStream()
 						Expect(err).ToNot(HaveOccurred())
@@ -56,7 +55,7 @@ var _ = Describe("non-zero RTT", func() {
 					serverPort := ln.Addr().(*net.UDPAddr).Port
 					proxy, err := quicproxy.NewQuicProxy("localhost:0", &quicproxy.Opts{
 						RemoteAddr: fmt.Sprintf("localhost:%d", serverPort),
-						DelayPacket: func(d quicproxy.Direction, p uint64) time.Duration {
+						DelayPacket: func(quicproxy.Direction, []byte) time.Duration {
 							return rtt / 2
 						},
 					})
@@ -65,11 +64,11 @@ var _ = Describe("non-zero RTT", func() {
 
 					sess, err := quic.DialAddr(
 						fmt.Sprintf("localhost:%d", proxy.LocalPort()),
-						&tls.Config{RootCAs: testdata.GetRootCA()},
+						getTLSClientConfig(),
 						&quic.Config{Versions: []protocol.VersionNumber{version}},
 					)
 					Expect(err).ToNot(HaveOccurred())
-					str, err := sess.AcceptStream()
+					str, err := sess.AcceptStream(context.Background())
 					Expect(err).ToNot(HaveOccurred())
 					data, err := ioutil.ReadAll(str)
 					Expect(err).ToNot(HaveOccurred())

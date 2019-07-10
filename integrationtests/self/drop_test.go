@@ -1,7 +1,7 @@
 package self_test
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
 	"math/rand"
 	"net"
@@ -11,7 +11,6 @@ import (
 	quic "github.com/lucas-clemente/quic-go"
 	quicproxy "github.com/lucas-clemente/quic-go/integrationtests/tools/proxy"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -31,7 +30,7 @@ var _ = Describe("Drop Tests", func() {
 		var err error
 		ln, err = quic.ListenAddr(
 			"localhost:0",
-			testdata.GetTLSConfig(),
+			getTLSConfig(),
 			&quic.Config{
 				Versions: []protocol.VersionNumber{version},
 			},
@@ -40,7 +39,7 @@ var _ = Describe("Drop Tests", func() {
 		serverPort := ln.Addr().(*net.UDPAddr).Port
 		proxy, err = quicproxy.NewQuicProxy("localhost:0", &quicproxy.Opts{
 			RemoteAddr: fmt.Sprintf("localhost:%d", serverPort),
-			DelayPacket: func(dir quicproxy.Direction, packetCount uint64) time.Duration {
+			DelayPacket: func(dir quicproxy.Direction, _ []byte) time.Duration {
 				return 5 * time.Millisecond // 10ms RTT
 			},
 			DropPacket: dropCallback,
@@ -76,7 +75,7 @@ var _ = Describe("Drop Tests", func() {
 						startTime := time.Now()
 
 						var numDroppedPackets int32
-						startListenerAndProxy(func(d quicproxy.Direction, p uint64) bool {
+						startListenerAndProxy(func(d quicproxy.Direction, _ []byte) bool {
 							if !d.Is(direction) {
 								return false
 							}
@@ -90,7 +89,7 @@ var _ = Describe("Drop Tests", func() {
 						done := make(chan struct{})
 						go func() {
 							defer GinkgoRecover()
-							sess, err := ln.Accept()
+							sess, err := ln.Accept(context.Background())
 							Expect(err).ToNot(HaveOccurred())
 							str, err := sess.OpenStream()
 							Expect(err).ToNot(HaveOccurred())
@@ -106,12 +105,12 @@ var _ = Describe("Drop Tests", func() {
 
 						sess, err := quic.DialAddr(
 							fmt.Sprintf("localhost:%d", proxy.LocalPort()),
-							&tls.Config{RootCAs: testdata.GetRootCA()},
+							getTLSClientConfig(),
 							&quic.Config{Versions: []protocol.VersionNumber{version}},
 						)
 						Expect(err).ToNot(HaveOccurred())
 						defer sess.Close()
-						str, err := sess.AcceptStream()
+						str, err := sess.AcceptStream(context.Background())
 						Expect(err).ToNot(HaveOccurred())
 						for i := uint8(1); i <= numMessages; i++ {
 							b := []byte{0}

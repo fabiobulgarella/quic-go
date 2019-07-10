@@ -2,6 +2,7 @@ package http3
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -55,7 +56,9 @@ func newClient(
 	if tlsConf == nil {
 		tlsConf = &tls.Config{}
 	}
-	tlsConf.NextProtos = []string{"h3-19"}
+	if !strSliceContains(tlsConf.NextProtos, nextProtoH3) {
+		tlsConf.NextProtos = append(tlsConf.NextProtos, nextProtoH3)
+	}
 	if quicConfig == nil {
 		quicConfig = defaultQuicConfig
 	}
@@ -87,7 +90,8 @@ func (c *client) dial() error {
 
 	go func() {
 		if err := c.setupSession(); err != nil {
-			c.session.CloseWithError(quic.ErrorCode(errorInternalError), err)
+			c.logger.Debugf("Setting up session failed: %s", err)
+			c.session.CloseWithError(quic.ErrorCode(errorInternalError), "")
 		}
 	}()
 
@@ -97,7 +101,7 @@ func (c *client) dial() error {
 
 func (c *client) setupSession() error {
 	// open the control stream
-	str, err := c.session.OpenUniStreamSync()
+	str, err := c.session.OpenUniStream()
 	if err != nil {
 		return err
 	}
@@ -135,7 +139,7 @@ func (c *client) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, c.handshakeErr
 	}
 
-	str, err := c.session.OpenStreamSync()
+	str, err := c.session.OpenStreamSync(context.Background())
 	if err != nil {
 		return nil, err
 	}

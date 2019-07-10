@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/md5"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,15 +9,19 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 
 	_ "net/http/pprof"
 
+	"github.com/lucas-clemente/quic-go"
 	"github.com/lucas-clemente/quic-go/http3"
+	"github.com/lucas-clemente/quic-go/integrationtests/tools/testserver"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
 	"github.com/lucas-clemente/quic-go/internal/utils"
+	"github.com/lucas-clemente/quic-go/quictrace"
 )
 
 type binds []string
@@ -37,8 +40,49 @@ type Size interface {
 	Size() int64
 }
 
+var tracer quictrace.Tracer
+
 func init() {
-	http.HandleFunc("/demo/tile", func(w http.ResponseWriter, r *http.Request) {
+	tracer = quictrace.NewTracer()
+}
+
+func exportTraces() error {
+	traces := tracer.GetAllTraces()
+	if len(traces) != 1 {
+		return errors.New("expected exactly one trace")
+	}
+	for _, trace := range traces {
+		f, err := os.Create("trace.qtr")
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(trace); err != nil {
+			return err
+		}
+		f.Close()
+		fmt.Println("Wrote trace to", f.Name())
+	}
+	return nil
+}
+
+type tracingHandler struct {
+	handler http.Handler
+}
+
+var _ http.Handler = &tracingHandler{}
+
+func (h *tracingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.handler.ServeHTTP(w, r)
+	if err := exportTraces(); err != nil {
+		panic(err)
+	}
+}
+
+func setupHandler(www string, trace bool) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.Handle("/", http.FileServer(http.Dir(www)))
+	mux.HandleFunc("/demo/tile", func(w http.ResponseWriter, r *http.Request) {
 		// Small 40x40 png
 		w.Write([]byte{
 			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
@@ -51,7 +95,7 @@ func init() {
 		})
 	})
 
-	http.HandleFunc("/demo/tiles", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/demo/tiles", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "<html><head><style>img{width:40px;height:40px;}</style></head><body>")
 		for i := 0; i < 200; i++ {
 			fmt.Fprintf(w, `<img src="/demo/tile?cachebust=%d">`, i)
@@ -59,7 +103,7 @@ func init() {
 		io.WriteString(w, "</body></html>")
 	})
 
-	http.HandleFunc("/demo/echo", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/demo/echo", func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			fmt.Printf("error reading body while handling /echo: %s\n", err.Error())
@@ -67,7 +111,7 @@ func init() {
 		w.Write(body)
 	})
 
-	http.HandleFunc("/demo/big/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/demo/big/", func(w http.ResponseWriter, r *http.Request) {
 		dim, err := strconv.Atoi(r.URL.Path[len("/demo/big/"):])
 		if err != nil {
 			io.WriteString(w, "<html><body><p>Value not allowed! Insert only integers.</p></body></html>")
@@ -80,7 +124,7 @@ func init() {
 
 	// accept file uploads and return the MD5 of the uploaded file
 	// maximum accepted file size is 1 GB
-	http.HandleFunc("/demo/upload", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/demo/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			err := r.ParseMultipartForm(1 << 30) // 1 GB
 			if err == nil {
@@ -90,10 +134,11 @@ func init() {
 					var size int64
 					if sizeInterface, ok := file.(Size); ok {
 						size = sizeInterface.Size()
-						b := make([]byte, size)
-						file.Read(b)
-						md5 := md5.Sum(b)
-						fmt.Fprintf(w, "%x", md5)
+						//b := make([]byte, size)
+						//file.Read(b)
+						//md5 := md5.Sum(b)
+						//fmt.Fprintf(w, "%x", md5)
+						fmt.Fprintf(w, "Uploaded file size: %d", size) // ADDED
 						return
 					}
 					err = errors.New("couldn't get uploaded file size")
@@ -108,6 +153,21 @@ func init() {
 				<input type="submit">
 			</form></body></html>`)
 	})
+
+	http.HandleFunc("/dynamic/", func(w http.ResponseWriter, r *http.Request) {
+		const maxSize = 1 << 30 // 1 GB
+		num, err := strconv.ParseInt(strings.ReplaceAll(r.RequestURI, "/dynamic/", ""), 10, 64)
+		if err != nil || num <= 0 || num > maxSize {
+			w.WriteHeader(400)
+			return
+		}
+		w.Write(testserver.GeneratePRData(int(num)))
+	})
+
+	if !trace {
+		return mux
+	}
+	return &tracingHandler{handler: mux}
 }
 
 func main() {
@@ -122,6 +182,7 @@ func main() {
 	flag.Var(&bs, "bind", "bind to")
 	www := flag.String("www", "/var/www", "www data")
 	tcp := flag.Bool("tcp", false, "also listen on TCP")
+	trace := flag.Bool("trace", false, "enable quic-trace")
 	flag.Parse()
 
 	logger := utils.DefaultLogger
@@ -133,10 +194,14 @@ func main() {
 	}
 	logger.SetLogTimeFormat("")
 
-	http.Handle("/", http.FileServer(http.Dir(*www)))
-
 	if len(bs) == 0 {
 		bs = binds{"localhost:6121"}
+	}
+
+	handler := setupHandler(*www, *trace)
+	var quicConf *quic.Config
+	if *trace {
+		quicConf = &quic.Config{QuicTracer: tracer}
 	}
 
 	var wg sync.WaitGroup
@@ -150,7 +215,8 @@ func main() {
 				err = http3.ListenAndServe(bCap, certFile, keyFile, nil)
 			} else {
 				server := http3.Server{
-					Server: &http.Server{Addr: bCap},
+					Server:     &http.Server{Handler: handler, Addr: bCap},
+					QuicConfig: quicConf,
 				}
 				err = server.ListenAndServeTLS(testdata.GetCertificatePaths())
 			}

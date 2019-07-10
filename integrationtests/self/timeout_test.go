@@ -2,7 +2,6 @@ package self_test
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -11,7 +10,6 @@ import (
 
 	quic "github.com/lucas-clemente/quic-go"
 	quicproxy "github.com/lucas-clemente/quic-go/integrationtests/tools/proxy"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -30,7 +28,7 @@ var _ = Describe("Timeout tests", func() {
 		go func() {
 			_, err := quic.DialAddr(
 				"localhost:12345",
-				&tls.Config{RootCAs: testdata.GetRootCA()},
+				getTLSClientConfig(),
 				&quic.Config{HandshakeTimeout: 10 * time.Millisecond},
 			)
 			errChan <- err
@@ -48,7 +46,7 @@ var _ = Describe("Timeout tests", func() {
 			_, err := quic.DialAddrContext(
 				ctx,
 				"localhost:12345",
-				&tls.Config{RootCAs: testdata.GetRootCA()},
+				getTLSClientConfig(),
 				nil,
 			)
 			errChan <- err
@@ -64,7 +62,7 @@ var _ = Describe("Timeout tests", func() {
 
 		server, err := quic.ListenAddr(
 			"localhost:0",
-			testdata.GetTLSConfig(),
+			getTLSConfig(),
 			nil,
 		)
 		Expect(err).ToNot(HaveOccurred())
@@ -72,7 +70,7 @@ var _ = Describe("Timeout tests", func() {
 
 		go func() {
 			defer GinkgoRecover()
-			sess, err := server.Accept()
+			sess, err := server.Accept(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 			str, err := sess.OpenStream()
 			Expect(err).ToNot(HaveOccurred())
@@ -84,7 +82,7 @@ var _ = Describe("Timeout tests", func() {
 
 		proxy, err := quicproxy.NewQuicProxy("localhost:0", &quicproxy.Opts{
 			RemoteAddr: fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
-			DropPacket: func(d quicproxy.Direction, p uint64) bool {
+			DropPacket: func(quicproxy.Direction, []byte) bool {
 				return drop.Get()
 			},
 		})
@@ -93,11 +91,11 @@ var _ = Describe("Timeout tests", func() {
 
 		sess, err := quic.DialAddr(
 			fmt.Sprintf("localhost:%d", proxy.LocalPort()),
-			&tls.Config{RootCAs: testdata.GetRootCA()},
+			getTLSClientConfig(),
 			&quic.Config{IdleTimeout: idleTimeout},
 		)
 		Expect(err).ToNot(HaveOccurred())
-		strIn, err := sess.AcceptStream()
+		strIn, err := sess.AcceptStream(context.Background())
 		Expect(err).ToNot(HaveOccurred())
 		strOut, err := sess.OpenStream()
 		Expect(err).ToNot(HaveOccurred())
@@ -118,9 +116,9 @@ var _ = Describe("Timeout tests", func() {
 		checkTimeoutError(err)
 		_, err = sess.OpenUniStream()
 		checkTimeoutError(err)
-		_, err = sess.AcceptStream()
+		_, err = sess.AcceptStream(context.Background())
 		checkTimeoutError(err)
-		_, err = sess.AcceptUniStream()
+		_, err = sess.AcceptUniStream(context.Background())
 		checkTimeoutError(err)
 	})
 
@@ -141,22 +139,22 @@ var _ = Describe("Timeout tests", func() {
 		})
 
 		It("times out after inactivity", func() {
-			server, err := quic.ListenAddr("localhost:0", testdata.GetTLSConfig(), nil)
+			server, err := quic.ListenAddr("localhost:0", getTLSConfig(), nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer server.Close()
 
 			serverSessionClosed := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
-				sess, err := server.Accept()
+				sess, err := server.Accept(context.Background())
 				Expect(err).ToNot(HaveOccurred())
-				sess.AcceptStream() // blocks until the session is closed
+				sess.AcceptStream(context.Background()) // blocks until the session is closed
 				close(serverSessionClosed)
 			}()
 
 			sess, err := quic.DialAddr(
 				fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
-				&tls.Config{RootCAs: testdata.GetRootCA()},
+				getTLSClientConfig(),
 				&quic.Config{IdleTimeout: idleTimeout},
 			)
 			Expect(err).ToNot(HaveOccurred())
@@ -164,7 +162,7 @@ var _ = Describe("Timeout tests", func() {
 			done := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
-				_, err := sess.AcceptStream()
+				_, err := sess.AcceptStream(context.Background())
 				checkTimeoutError(err)
 				close(done)
 			}()
@@ -182,22 +180,22 @@ var _ = Describe("Timeout tests", func() {
 		})
 
 		It("times out after sending a packet", func() {
-			server, err := quic.ListenAddr("localhost:0", testdata.GetTLSConfig(), nil)
+			server, err := quic.ListenAddr("localhost:0", getTLSConfig(), nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer server.Close()
 
 			serverSessionClosed := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
-				sess, err := server.Accept()
+				sess, err := server.Accept(context.Background())
 				Expect(err).ToNot(HaveOccurred())
-				sess.AcceptStream() // blocks until the session is closed
+				sess.AcceptStream(context.Background()) // blocks until the session is closed
 				close(serverSessionClosed)
 			}()
 
 			sess, err := quic.DialAddr(
 				fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
-				&tls.Config{RootCAs: testdata.GetRootCA()},
+				getTLSClientConfig(),
 				&quic.Config{IdleTimeout: idleTimeout},
 			)
 			Expect(err).ToNot(HaveOccurred())
@@ -214,7 +212,7 @@ var _ = Describe("Timeout tests", func() {
 			done := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
-				_, err := sess.AcceptStream()
+				_, err := sess.AcceptStream(context.Background())
 				checkTimeoutError(err)
 				close(done)
 			}()

@@ -1,7 +1,7 @@
 package self_test
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -10,7 +10,6 @@ import (
 	quic "github.com/lucas-clemente/quic-go"
 	"github.com/lucas-clemente/quic-go/integrationtests/tools/testserver"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -28,7 +27,7 @@ var _ = Describe("Unidirectional Streams", func() {
 	BeforeEach(func() {
 		var err error
 		qconf = &quic.Config{Versions: []protocol.VersionNumber{protocol.VersionTLS}}
-		server, err = quic.ListenAddr("localhost:0", testdata.GetTLSConfig(), qconf)
+		server, err = quic.ListenAddr("localhost:0", getTLSConfig(), qconf)
 		Expect(err).ToNot(HaveOccurred())
 		serverAddr = fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port)
 	})
@@ -43,7 +42,7 @@ var _ = Describe("Unidirectional Streams", func() {
 
 	runSendingPeer := func(sess quic.Session) {
 		for i := 0; i < numStreams; i++ {
-			str, err := sess.OpenUniStreamSync()
+			str, err := sess.OpenUniStreamSync(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 			go func() {
 				defer GinkgoRecover()
@@ -58,7 +57,7 @@ var _ = Describe("Unidirectional Streams", func() {
 		var wg sync.WaitGroup
 		wg.Add(numStreams)
 		for i := 0; i < numStreams; i++ {
-			str, err := sess.AcceptUniStream()
+			str, err := sess.AcceptUniStream(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 			go func() {
 				defer GinkgoRecover()
@@ -74,7 +73,7 @@ var _ = Describe("Unidirectional Streams", func() {
 	It(fmt.Sprintf("client opening %d streams to a server", numStreams), func() {
 		go func() {
 			defer GinkgoRecover()
-			sess, err := server.Accept()
+			sess, err := server.Accept(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 			runReceivingPeer(sess)
 			sess.Close()
@@ -82,7 +81,7 @@ var _ = Describe("Unidirectional Streams", func() {
 
 		client, err := quic.DialAddr(
 			serverAddr,
-			&tls.Config{RootCAs: testdata.GetRootCA()},
+			getTLSClientConfig(),
 			qconf,
 		)
 		Expect(err).ToNot(HaveOccurred())
@@ -93,14 +92,14 @@ var _ = Describe("Unidirectional Streams", func() {
 	It(fmt.Sprintf("server opening %d streams to a client", numStreams), func() {
 		go func() {
 			defer GinkgoRecover()
-			sess, err := server.Accept()
+			sess, err := server.Accept(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 			runSendingPeer(sess)
 		}()
 
 		client, err := quic.DialAddr(
 			serverAddr,
-			&tls.Config{RootCAs: testdata.GetRootCA()},
+			getTLSClientConfig(),
 			qconf,
 		)
 		Expect(err).ToNot(HaveOccurred())
@@ -111,7 +110,7 @@ var _ = Describe("Unidirectional Streams", func() {
 		done1 := make(chan struct{})
 		go func() {
 			defer GinkgoRecover()
-			sess, err := server.Accept()
+			sess, err := server.Accept(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 			done := make(chan struct{})
 			go func() {
@@ -126,7 +125,7 @@ var _ = Describe("Unidirectional Streams", func() {
 
 		client, err := quic.DialAddr(
 			serverAddr,
-			&tls.Config{RootCAs: testdata.GetRootCA()},
+			getTLSClientConfig(),
 			qconf,
 		)
 		Expect(err).ToNot(HaveOccurred())

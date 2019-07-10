@@ -14,6 +14,7 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
+	"github.com/lucas-clemente/quic-go/quictrace"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -27,6 +28,7 @@ var _ = Describe("Client", func() {
 		connID          protocol.ConnectionID
 		mockMultiplexer *MockMultiplexer
 		origMultiplexer multiplexer
+		tlsConf         *tls.Config
 
 		originalClientSessConstructor func(
 			conn connection,
@@ -65,6 +67,7 @@ var _ = Describe("Client", func() {
 	}
 
 	BeforeEach(func() {
+		tlsConf = &tls.Config{NextProtos: []string{"proto1"}}
 		connID = protocol.ConnectionID{0, 0, 0, 0, 0, 0, 0x13, 0x37}
 		originalClientSessConstructor = newClientSession
 		Eventually(areSessionsRunning).Should(BeFalse())
@@ -148,7 +151,7 @@ var _ = Describe("Client", func() {
 				sess.EXPECT().run()
 				return sess, nil
 			}
-			_, err := DialAddr("localhost:17890", nil, &Config{HandshakeTimeout: time.Millisecond})
+			_, err := DialAddr("localhost:17890", tlsConf, &Config{HandshakeTimeout: time.Millisecond})
 			Expect(err).ToNot(HaveOccurred())
 			Eventually(remoteAddrChan).Should(Receive(Equal("127.0.0.1:17890")))
 		})
@@ -178,9 +181,45 @@ var _ = Describe("Client", func() {
 				sess.EXPECT().run()
 				return sess, nil
 			}
-			_, err := DialAddr("localhost:17890", &tls.Config{ServerName: "foobar"}, nil)
+			tlsConf.ServerName = "foobar"
+			_, err := DialAddr("localhost:17890", tlsConf, nil)
 			Expect(err).ToNot(HaveOccurred())
 			Eventually(hostnameChan).Should(Receive(Equal("foobar")))
+		})
+
+		It("allows passing host without port as server name", func() {
+			manager := NewMockPacketHandlerManager(mockCtrl)
+			manager.EXPECT().Add(gomock.Any(), gomock.Any())
+			mockMultiplexer.EXPECT().AddConn(packetConn, gomock.Any(), gomock.Any()).Return(manager, nil)
+
+			hostnameChan := make(chan string, 1)
+			newClientSession = func(
+				_ connection,
+				_ sessionRunner,
+				_ protocol.ConnectionID,
+				_ protocol.ConnectionID,
+				_ *Config,
+				tlsConf *tls.Config,
+				_ protocol.PacketNumber,
+				_ *handshake.TransportParameters,
+				_ protocol.VersionNumber,
+				_ utils.Logger,
+				_ protocol.VersionNumber,
+			) (quicSession, error) {
+				hostnameChan <- tlsConf.ServerName
+				sess := NewMockQuicSession(mockCtrl)
+				sess.EXPECT().run()
+				return sess, nil
+			}
+			_, err := Dial(
+				packetConn,
+				addr,
+				"test.com",
+				tlsConf,
+				&Config{},
+			)
+			Expect(err).ToNot(HaveOccurred())
+			Eventually(hostnameChan).Should(Receive(Equal("test.com")))
 		})
 
 		It("returns after the handshake is complete", func() {
@@ -211,7 +250,7 @@ var _ = Describe("Client", func() {
 				packetConn,
 				addr,
 				"localhost:1337",
-				nil,
+				tlsConf,
 				&Config{},
 			)
 			Expect(err).ToNot(HaveOccurred())
@@ -247,7 +286,7 @@ var _ = Describe("Client", func() {
 				packetConn,
 				addr,
 				"localhost:1337",
-				nil,
+				tlsConf,
 				&Config{},
 			)
 			Expect(err).To(MatchError(testErr))
@@ -288,7 +327,7 @@ var _ = Describe("Client", func() {
 					packetConn,
 					addr,
 					"localhost:1337",
-					nil,
+					tlsConf,
 					&Config{},
 				)
 				Expect(err).To(MatchError(context.Canceled))
@@ -333,7 +372,7 @@ var _ = Describe("Client", func() {
 				packetConn,
 				addr,
 				"localhost:1337",
-				nil,
+				tlsConf,
 				&Config{},
 			)
 			Expect(err).ToNot(HaveOccurred())
@@ -376,7 +415,7 @@ var _ = Describe("Client", func() {
 			done := make(chan struct{})
 			go func() {
 				defer GinkgoRecover()
-				_, err := DialAddr("localhost:1337", nil, nil)
+				_, err := DialAddr("localhost:1337", tlsConf, nil)
 				Expect(err).ToNot(HaveOccurred())
 				close(done)
 			}()
@@ -395,6 +434,7 @@ var _ = Describe("Client", func() {
 
 		Context("quic.Config", func() {
 			It("setups with the right values", func() {
+				tracer := quictrace.NewTracer()
 				config := &Config{
 					HandshakeTimeout:      1337 * time.Minute,
 					IdleTimeout:           42 * time.Hour,
@@ -402,6 +442,7 @@ var _ = Describe("Client", func() {
 					MaxIncomingUniStreams: 4321,
 					ConnectionIDLength:    13,
 					StatelessResetKey:     []byte("foobar"),
+					QuicTracer:            tracer,
 				}
 				c := populateClientConfig(config, false)
 				Expect(c.HandshakeTimeout).To(Equal(1337 * time.Minute))
@@ -410,6 +451,7 @@ var _ = Describe("Client", func() {
 				Expect(c.MaxIncomingUniStreams).To(Equal(4321))
 				Expect(c.ConnectionIDLength).To(Equal(13))
 				Expect(c.StatelessResetKey).To(Equal([]byte("foobar")))
+				Expect(c.QuicTracer).To(Equal(tracer))
 			})
 
 			It("errors when the Config contains an invalid version", func() {
@@ -417,8 +459,13 @@ var _ = Describe("Client", func() {
 				mockMultiplexer.EXPECT().AddConn(packetConn, gomock.Any(), gomock.Any()).Return(manager, nil)
 
 				version := protocol.VersionNumber(0x1234)
-				_, err := Dial(packetConn, nil, "localhost:1234", &tls.Config{}, &Config{Versions: []protocol.VersionNumber{version}})
+				_, err := Dial(packetConn, nil, "localhost:1234", tlsConf, &Config{Versions: []protocol.VersionNumber{version}})
 				Expect(err).To(MatchError("0x1234 is not a valid QUIC version"))
+			})
+
+			It("erros when the tls.Config doesn't contain NextProtos", func() {
+				_, err := Dial(packetConn, nil, "localhost:1234", &tls.Config{}, nil)
+				Expect(err).To(MatchError("quic: NextProtos not set in tls.Config"))
 			})
 
 			It("disables bidirectional streams", func() {
@@ -487,7 +534,7 @@ var _ = Describe("Client", func() {
 				sess.EXPECT().run()
 				return sess, nil
 			}
-			_, err := Dial(packetConn, addr, "localhost:1337", nil, config)
+			_, err := Dial(packetConn, addr, "localhost:1337", tlsConf, config)
 			Expect(err).ToNot(HaveOccurred())
 			Eventually(c).Should(BeClosed())
 			Expect(cconn.(*conn).pconn).To(Equal(packetConn))
@@ -535,7 +582,7 @@ var _ = Describe("Client", func() {
 					packetConn,
 					addr,
 					"localhost:1337",
-					nil,
+					tlsConf,
 					&Config{},
 				)
 				Expect(err).To(MatchError(testErr))

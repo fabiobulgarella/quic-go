@@ -1,7 +1,7 @@
 package self_test
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -10,7 +10,6 @@ import (
 	quic "github.com/lucas-clemente/quic-go"
 	"github.com/lucas-clemente/quic-go/integrationtests/tools/testserver"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -22,12 +21,12 @@ var _ = Describe("Connection ID lengths tests", func() {
 
 	runServer := func(conf *quic.Config) quic.Listener {
 		GinkgoWriter.Write([]byte(fmt.Sprintf("Using %d byte connection ID for the server\n", conf.ConnectionIDLength)))
-		ln, err := quic.ListenAddr("localhost:0", testdata.GetTLSConfig(), conf)
+		ln, err := quic.ListenAddr("localhost:0", getTLSConfig(), conf)
 		Expect(err).ToNot(HaveOccurred())
 		go func() {
 			defer GinkgoRecover()
 			for {
-				sess, err := ln.Accept()
+				sess, err := ln.Accept(context.Background())
 				if err != nil {
 					return
 				}
@@ -48,12 +47,12 @@ var _ = Describe("Connection ID lengths tests", func() {
 		GinkgoWriter.Write([]byte(fmt.Sprintf("Using %d byte connection ID for the client\n", conf.ConnectionIDLength)))
 		cl, err := quic.DialAddr(
 			fmt.Sprintf("localhost:%d", addr.(*net.UDPAddr).Port),
-			&tls.Config{RootCAs: testdata.GetRootCA()},
+			getTLSClientConfig(),
 			conf,
 		)
 		Expect(err).ToNot(HaveOccurred())
 		defer cl.Close()
-		str, err := cl.AcceptStream()
+		str, err := cl.AcceptStream(context.Background())
 		Expect(err).ToNot(HaveOccurred())
 		data, err := ioutil.ReadAll(str)
 		Expect(err).ToNot(HaveOccurred())

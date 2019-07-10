@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -35,14 +36,16 @@ func init() {
 					go func() {
 						defer GinkgoRecover()
 						var err error
+						tlsConf := testdata.GetTLSConfig()
+						tlsConf.NextProtos = []string{"benchmark"}
 						ln, err = quic.ListenAddr(
 							"localhost:0",
-							testdata.GetTLSConfig(),
+							tlsConf,
 							&quic.Config{Versions: []protocol.VersionNumber{version}},
 						)
 						Expect(err).ToNot(HaveOccurred())
 						serverAddr <- ln.Addr()
-						sess, err := ln.Accept()
+						sess, err := ln.Accept(context.Background())
 						Expect(err).ToNot(HaveOccurred())
 						// wait for the client to complete the handshake before sending the data
 						// this should not be necessary, but due to timing issues on the CIs, this is necessary to avoid sending too many undecryptable packets
@@ -59,12 +62,12 @@ func init() {
 					addr := <-serverAddr
 					sess, err := quic.DialAddr(
 						addr.String(),
-						&tls.Config{InsecureSkipVerify: true},
+						&tls.Config{InsecureSkipVerify: true, NextProtos: []string{"benchmark"}},
 						&quic.Config{Versions: []protocol.VersionNumber{version}},
 					)
 					Expect(err).ToNot(HaveOccurred())
 					close(handshakeChan)
-					str, err := sess.AcceptStream()
+					str, err := sess.AcceptStream(context.Background())
 					Expect(err).ToNot(HaveOccurred())
 
 					buf := &bytes.Buffer{}

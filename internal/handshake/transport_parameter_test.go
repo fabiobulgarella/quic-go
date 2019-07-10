@@ -26,14 +26,15 @@ var _ = Describe("Transport Parameters", func() {
 			InitialMaxStreamDataBidiRemote: 0x2345,
 			InitialMaxStreamDataUni:        0x3456,
 			InitialMaxData:                 0x4567,
-			MaxBidiStreams:                 1337,
-			MaxUniStreams:                  7331,
+			MaxBidiStreamNum:               1337,
+			MaxUniStreamNum:                7331,
 			IdleTimeout:                    42 * time.Second,
 			OriginalConnectionID:           protocol.ConnectionID{0xde, 0xad, 0xbe, 0xef},
 			AckDelayExponent:               14,
+			MaxAckDelay:                    37 * time.Millisecond,
 			StatelessResetToken:            &[16]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00},
 		}
-		Expect(p.String()).To(Equal("&handshake.TransportParameters{OriginalConnectionID: 0xdeadbeef, InitialMaxStreamDataBidiLocal: 0x1234, InitialMaxStreamDataBidiRemote: 0x2345, InitialMaxStreamDataUni: 0x3456, InitialMaxData: 0x4567, MaxBidiStreams: 1337, MaxUniStreams: 7331, IdleTimeout: 42s, AckDelayExponent: 14, StatelessResetToken: 0x112233445566778899aabbccddeeff00}"))
+		Expect(p.String()).To(Equal("&handshake.TransportParameters{OriginalConnectionID: 0xdeadbeef, InitialMaxStreamDataBidiLocal: 0x1234, InitialMaxStreamDataBidiRemote: 0x2345, InitialMaxStreamDataUni: 0x3456, InitialMaxData: 0x4567, MaxBidiStreamNum: 1337, MaxUniStreamNum: 7331, IdleTimeout: 42s, AckDelayExponent: 14, MaxAckDelay: 37ms, StatelessResetToken: 0x112233445566778899aabbccddeeff00}"))
 	})
 
 	It("has a string representation, if there's no stateless reset token", func() {
@@ -42,22 +43,23 @@ var _ = Describe("Transport Parameters", func() {
 			InitialMaxStreamDataBidiRemote: 0x2345,
 			InitialMaxStreamDataUni:        0x3456,
 			InitialMaxData:                 0x4567,
-			MaxBidiStreams:                 1337,
-			MaxUniStreams:                  7331,
+			MaxBidiStreamNum:               1337,
+			MaxUniStreamNum:                7331,
 			IdleTimeout:                    42 * time.Second,
 			OriginalConnectionID:           protocol.ConnectionID{0xde, 0xad, 0xbe, 0xef},
 			AckDelayExponent:               14,
+			MaxAckDelay:                    37 * time.Second,
 		}
-		Expect(p.String()).To(Equal("&handshake.TransportParameters{OriginalConnectionID: 0xdeadbeef, InitialMaxStreamDataBidiLocal: 0x1234, InitialMaxStreamDataBidiRemote: 0x2345, InitialMaxStreamDataUni: 0x3456, InitialMaxData: 0x4567, MaxBidiStreams: 1337, MaxUniStreams: 7331, IdleTimeout: 42s, AckDelayExponent: 14}"))
+		Expect(p.String()).To(Equal("&handshake.TransportParameters{OriginalConnectionID: 0xdeadbeef, InitialMaxStreamDataBidiLocal: 0x1234, InitialMaxStreamDataBidiRemote: 0x2345, InitialMaxStreamDataUni: 0x3456, InitialMaxData: 0x4567, MaxBidiStreamNum: 1337, MaxUniStreamNum: 7331, IdleTimeout: 42s, AckDelayExponent: 14, MaxAckDelay: 37s}"))
 	})
 
-	getRandomValue := func() uint64 {
-		maxVals := []int64{math.MaxUint8 / 4, math.MaxUint16 / 4, math.MaxUint32 / 4, math.MaxUint64 / 4}
-		rand.Seed(GinkgoRandomSeed())
-		return uint64(rand.Int63n(maxVals[int(rand.Int31n(4))]))
-	}
-
 	It("marshals and unmarshals", func() {
+		rand.Seed(GinkgoRandomSeed())
+		getRandomValue := func() uint64 {
+			maxVals := []int64{math.MaxUint8 / 4, math.MaxUint16 / 4, math.MaxUint32 / 4, math.MaxUint64 / 4}
+			return uint64(rand.Int63n(maxVals[int(rand.Int31n(4))]))
+		}
+
 		var token [16]byte
 		rand.Read(token[:])
 		params := &TransportParameters{
@@ -66,12 +68,13 @@ var _ = Describe("Transport Parameters", func() {
 			InitialMaxStreamDataUni:        protocol.ByteCount(getRandomValue()),
 			InitialMaxData:                 protocol.ByteCount(getRandomValue()),
 			IdleTimeout:                    0xcafe * time.Second,
-			MaxBidiStreams:                 getRandomValue(),
-			MaxUniStreams:                  getRandomValue(),
+			MaxBidiStreamNum:               protocol.StreamNum(getRandomValue()),
+			MaxUniStreamNum:                protocol.StreamNum(getRandomValue()),
 			DisableMigration:               true,
 			StatelessResetToken:            &token,
 			OriginalConnectionID:           protocol.ConnectionID{0xde, 0xad, 0xbe, 0xef},
 			AckDelayExponent:               13,
+			MaxAckDelay:                    42 * time.Millisecond,
 		}
 		data := params.Marshal()
 
@@ -81,13 +84,14 @@ var _ = Describe("Transport Parameters", func() {
 		Expect(p.InitialMaxStreamDataBidiRemote).To(Equal(params.InitialMaxStreamDataBidiRemote))
 		Expect(p.InitialMaxStreamDataUni).To(Equal(params.InitialMaxStreamDataUni))
 		Expect(p.InitialMaxData).To(Equal(params.InitialMaxData))
-		Expect(p.MaxUniStreams).To(Equal(params.MaxUniStreams))
-		Expect(p.MaxBidiStreams).To(Equal(params.MaxBidiStreams))
+		Expect(p.MaxUniStreamNum).To(Equal(params.MaxUniStreamNum))
+		Expect(p.MaxBidiStreamNum).To(Equal(params.MaxBidiStreamNum))
 		Expect(p.IdleTimeout).To(Equal(params.IdleTimeout))
 		Expect(p.DisableMigration).To(Equal(params.DisableMigration))
 		Expect(p.StatelessResetToken).To(Equal(params.StatelessResetToken))
 		Expect(p.OriginalConnectionID).To(Equal(protocol.ConnectionID{0xde, 0xad, 0xbe, 0xef}))
 		Expect(p.AckDelayExponent).To(Equal(uint8(13)))
+		Expect(p.MaxAckDelay).To(Equal(42 * time.Millisecond))
 	})
 
 	It("errors if the transport parameters are too short to contain the length", func() {
@@ -126,6 +130,19 @@ var _ = Describe("Transport Parameters", func() {
 		b.Write([]byte("foobar"))
 		p := &TransportParameters{}
 		Expect(p.Unmarshal(prependLength(b.Bytes()), protocol.PerspectiveServer)).To(MatchError("wrong length for disable_migration: 6 (expected empty)"))
+	})
+
+	It("errors when the max_ack_delay is too large", func() {
+		data := (&TransportParameters{MaxAckDelay: 1 << 14 * time.Millisecond}).Marshal()
+		p := &TransportParameters{}
+		Expect(p.Unmarshal(data, protocol.PerspectiveServer)).To(MatchError("invalid value for max_ack_delay: 16384ms (maximum 16383ms)"))
+	})
+
+	It("doesn't send the max_ack_delay, if it has the default value", func() {
+		dataDefault := (&TransportParameters{MaxAckDelay: protocol.DefaultMaxAckDelay}).Marshal()
+		defaultLen := len(dataDefault)
+		data := (&TransportParameters{MaxAckDelay: protocol.DefaultMaxAckDelay + time.Millisecond}).Marshal()
+		Expect(len(data)).To(Equal(defaultLen + 2 /* parameter ID */ + 2 /* length field */ + 1 /* value */))
 	})
 
 	It("errors when the ack_delay_exponenent is too large", func() {

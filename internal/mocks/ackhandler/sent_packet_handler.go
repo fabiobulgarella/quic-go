@@ -12,6 +12,7 @@ import (
 	ackhandler "github.com/lucas-clemente/quic-go/internal/ackhandler"
 	protocol "github.com/lucas-clemente/quic-go/internal/protocol"
 	wire "github.com/lucas-clemente/quic-go/internal/wire"
+	quictrace "github.com/lucas-clemente/quic-go/quictrace"
 )
 
 // MockSentPacketHandler is a mock of SentPacketHandler interface
@@ -66,6 +67,18 @@ func (mr *MockSentPacketHandlerMockRecorder) DequeueProbePacket() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DequeueProbePacket", reflect.TypeOf((*MockSentPacketHandler)(nil).DequeueProbePacket))
 }
 
+// DropPackets mocks base method
+func (m *MockSentPacketHandler) DropPackets(arg0 protocol.EncryptionLevel) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "DropPackets", arg0)
+}
+
+// DropPackets indicates an expected call of DropPackets
+func (mr *MockSentPacketHandlerMockRecorder) DropPackets(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DropPackets", reflect.TypeOf((*MockSentPacketHandler)(nil).DropPackets), arg0)
+}
+
 // GetAlarmTimeout mocks base method
 func (m *MockSentPacketHandler) GetAlarmTimeout() time.Time {
 	m.ctrl.T.Helper()
@@ -92,6 +105,20 @@ func (m *MockSentPacketHandler) GetLowestPacketNotConfirmedAcked() protocol.Pack
 func (mr *MockSentPacketHandlerMockRecorder) GetLowestPacketNotConfirmedAcked() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLowestPacketNotConfirmedAcked", reflect.TypeOf((*MockSentPacketHandler)(nil).GetLowestPacketNotConfirmedAcked))
+}
+
+// GetStats mocks base method
+func (m *MockSentPacketHandler) GetStats() *quictrace.TransportState {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetStats")
+	ret0, _ := ret[0].(*quictrace.TransportState)
+	return ret0
+}
+
+// GetStats indicates an expected call of GetStats
+func (mr *MockSentPacketHandlerMockRecorder) GetStats() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetStats", reflect.TypeOf((*MockSentPacketHandler)(nil).GetStats))
 }
 
 // OnAlarm mocks base method
@@ -201,18 +228,6 @@ func (m *MockSentPacketHandler) SentPacketsAsRetransmission(arg0 []*ackhandler.P
 func (mr *MockSentPacketHandlerMockRecorder) SentPacketsAsRetransmission(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SentPacketsAsRetransmission", reflect.TypeOf((*MockSentPacketHandler)(nil).SentPacketsAsRetransmission), arg0, arg1)
-}
-
-// SetHandshakeComplete mocks base method
-func (m *MockSentPacketHandler) SetHandshakeComplete() {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "SetHandshakeComplete")
-}
-
-// SetHandshakeComplete indicates an expected call of SetHandshakeComplete
-func (mr *MockSentPacketHandlerMockRecorder) SetHandshakeComplete() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetHandshakeComplete", reflect.TypeOf((*MockSentPacketHandler)(nil).SetHandshakeComplete))
 }
 
 // ShouldSendNumPackets mocks base method

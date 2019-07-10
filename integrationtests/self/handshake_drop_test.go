@@ -1,16 +1,16 @@
 package self_test
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
 	mrand "math/rand"
 	"net"
+	"sync/atomic"
 	"time"
 
 	quic "github.com/lucas-clemente/quic-go"
 	quicproxy "github.com/lucas-clemente/quic-go/integrationtests/tools/proxy"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
-	"github.com/lucas-clemente/quic-go/internal/testdata"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -34,7 +34,7 @@ var _ = Describe("Handshake drop tests", func() {
 		var err error
 		ln, err = quic.ListenAddr(
 			"localhost:0",
-			testdata.GetTLSConfig(),
+			getTLSConfig(),
 			&quic.Config{
 				Versions: []protocol.VersionNumber{version},
 			},
@@ -59,10 +59,10 @@ var _ = Describe("Handshake drop tests", func() {
 			serverSessionChan := make(chan quic.Session)
 			go func() {
 				defer GinkgoRecover()
-				sess, err := ln.Accept()
+				sess, err := ln.Accept(context.Background())
 				Expect(err).ToNot(HaveOccurred())
 				defer sess.Close()
-				str, err := sess.AcceptStream()
+				str, err := sess.AcceptStream(context.Background())
 				Expect(err).ToNot(HaveOccurred())
 				b := make([]byte, 6)
 				_, err = gbytes.TimeoutReader(str, 10*time.Second).Read(b)
@@ -72,7 +72,7 @@ var _ = Describe("Handshake drop tests", func() {
 			}()
 			sess, err := quic.DialAddr(
 				fmt.Sprintf("localhost:%d", proxy.LocalPort()),
-				&tls.Config{RootCAs: testdata.GetRootCA()},
+				getTLSClientConfig(),
 				&quic.Config{Versions: []protocol.VersionNumber{version}},
 			)
 			Expect(err).ToNot(HaveOccurred())
@@ -94,7 +94,7 @@ var _ = Describe("Handshake drop tests", func() {
 			serverSessionChan := make(chan quic.Session)
 			go func() {
 				defer GinkgoRecover()
-				sess, err := ln.Accept()
+				sess, err := ln.Accept(context.Background())
 				Expect(err).ToNot(HaveOccurred())
 				str, err := sess.OpenStream()
 				Expect(err).ToNot(HaveOccurred())
@@ -104,11 +104,11 @@ var _ = Describe("Handshake drop tests", func() {
 			}()
 			sess, err := quic.DialAddr(
 				fmt.Sprintf("localhost:%d", proxy.LocalPort()),
-				&tls.Config{RootCAs: testdata.GetRootCA()},
+				getTLSClientConfig(),
 				&quic.Config{Versions: []protocol.VersionNumber{version}},
 			)
 			Expect(err).ToNot(HaveOccurred())
-			str, err := sess.AcceptStream()
+			str, err := sess.AcceptStream(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 			b := make([]byte, 6)
 			_, err = gbytes.TimeoutReader(str, 10*time.Second).Read(b)
@@ -128,13 +128,13 @@ var _ = Describe("Handshake drop tests", func() {
 			serverSessionChan := make(chan quic.Session)
 			go func() {
 				defer GinkgoRecover()
-				sess, err := ln.Accept()
+				sess, err := ln.Accept(context.Background())
 				Expect(err).ToNot(HaveOccurred())
 				serverSessionChan <- sess
 			}()
 			sess, err := quic.DialAddr(
 				fmt.Sprintf("localhost:%d", proxy.LocalPort()),
-				&tls.Config{RootCAs: testdata.GetRootCA()},
+				getTLSClientConfig(),
 				&quic.Config{Versions: []protocol.VersionNumber{version}},
 			)
 			Expect(err).ToNot(HaveOccurred())
@@ -162,21 +162,37 @@ var _ = Describe("Handshake drop tests", func() {
 
 					Context(app.name, func() {
 						It(fmt.Sprintf("establishes a connection when the first packet is lost in %s direction", d), func() {
-							startListenerAndProxy(func(d quicproxy.Direction, p uint64) bool {
+							var incoming, outgoing int32
+							startListenerAndProxy(func(d quicproxy.Direction, _ []byte) bool {
+								var p int32
+								switch d {
+								case quicproxy.DirectionIncoming:
+									p = atomic.AddInt32(&incoming, 1)
+								case quicproxy.DirectionOutgoing:
+									p = atomic.AddInt32(&outgoing, 1)
+								}
 								return p == 1 && d.Is(direction)
 							}, version)
 							app.run(version)
 						})
 
 						It(fmt.Sprintf("establishes a connection when the second packet is lost in %s direction", d), func() {
-							startListenerAndProxy(func(d quicproxy.Direction, p uint64) bool {
+							var incoming, outgoing int32
+							startListenerAndProxy(func(d quicproxy.Direction, _ []byte) bool {
+								var p int32
+								switch d {
+								case quicproxy.DirectionIncoming:
+									p = atomic.AddInt32(&incoming, 1)
+								case quicproxy.DirectionOutgoing:
+									p = atomic.AddInt32(&outgoing, 1)
+								}
 								return p == 2 && d.Is(direction)
 							}, version)
 							app.run(version)
 						})
 
 						It(fmt.Sprintf("establishes a connection when 1/5 of the packets are lost in %s direction", d), func() {
-							startListenerAndProxy(func(d quicproxy.Direction, p uint64) bool {
+							startListenerAndProxy(func(d quicproxy.Direction, _ []byte) bool {
 								return d.Is(direction) && stochasticDropper(5)
 							}, version)
 							app.run(version)

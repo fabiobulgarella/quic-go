@@ -38,12 +38,12 @@ var _ = Describe("Frame logging", func() {
 
 	It("logs sent frames", func() {
 		LogFrame(logger, &ResetStreamFrame{}, true)
-		Expect(buf.Bytes()).To(ContainSubstring("\t-> &wire.ResetStreamFrame{StreamID:0x0, ErrorCode:0x0, ByteOffset:0x0}\n"))
+		Expect(buf.Bytes()).To(ContainSubstring("\t-> &wire.ResetStreamFrame{StreamID:0, ErrorCode:0x0, ByteOffset:0x0}\n"))
 	})
 
 	It("logs received frames", func() {
 		LogFrame(logger, &ResetStreamFrame{}, false)
-		Expect(buf.Bytes()).To(ContainSubstring("\t<- &wire.ResetStreamFrame{StreamID:0x0, ErrorCode:0x0, ByteOffset:0x0}\n"))
+		Expect(buf.Bytes()).To(ContainSubstring("\t<- &wire.ResetStreamFrame{StreamID:0, ErrorCode:0x0, ByteOffset:0x0}\n"))
 	})
 
 	It("logs CRYPTO frames", func() {
@@ -85,6 +85,24 @@ var _ = Describe("Frame logging", func() {
 		}
 		LogFrame(logger, frame, false)
 		Expect(buf.String()).To(ContainSubstring("\t<- &wire.AckFrame{LargestAcked: 0x8, LowestAcked: 0x2, AckRanges: {{Largest: 0x8, Smallest: 0x5}, {Largest: 0x3, Smallest: 0x2}}, DelayTime: 12ms}\n"))
+	})
+
+	It("logs MAX_STREAMS frames", func() {
+		frame := &MaxStreamsFrame{
+			Type:         protocol.StreamTypeBidi,
+			MaxStreamNum: 42,
+		}
+		LogFrame(logger, frame, false)
+		Expect(buf.String()).To(ContainSubstring("\t<- &wire.MaxStreamsFrame{Type: bidi, MaxStreamNum: 42}\n"))
+	})
+
+	It("logs STREAMS_BLOCKED frames", func() {
+		frame := &StreamsBlockedFrame{
+			Type:        protocol.StreamTypeBidi,
+			StreamLimit: 42,
+		}
+		LogFrame(logger, frame, false)
+		Expect(buf.String()).To(ContainSubstring("\t<- &wire.StreamsBlockedFrame{Type: bidi, MaxStreams: 42}\n"))
 	})
 
 	It("logs NEW_CONNECTION_ID frames", func() {

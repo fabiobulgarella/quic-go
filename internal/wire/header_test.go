@@ -137,7 +137,7 @@ var _ = Describe("Header Parsing", func() {
 			data, err := ComposeVersionNegotiation(connID, connID, versions)
 			Expect(err).ToNot(HaveOccurred())
 			_, _, _, err = ParsePacket(data[:len(data)-2], 0)
-			Expect(err).To(MatchError("Version Negotation packet has a version list with an invalid length"))
+			Expect(err).To(MatchError("Version Negotiation packet has a version list with an invalid length"))
 		})
 
 		It("errors if the version list is empty", func() {
@@ -148,7 +148,7 @@ var _ = Describe("Header Parsing", func() {
 			// remove 8 bytes (two versions), since ComposeVersionNegotiation also added a reserved version number
 			data = data[:len(data)-8]
 			_, _, _, err = ParsePacket(data, 0)
-			Expect(err).To(MatchError("Version Negoation packet has empty version list"))
+			Expect(err).To(MatchError("Version Negotiation packet has empty version list"))
 		})
 	})
 
@@ -291,15 +291,18 @@ var _ = Describe("Header Parsing", func() {
 		})
 
 		It("errors if the 5th or 6th bit are set", func() {
-			data := []byte{0xc0 | 0x2<<4 /* set the 5th bit */ | 0x8}
+			data := []byte{0xc0 | 0x2<<4 | 0x8 /* set the 5th bit */ | 0x1 /* 2 byte packet number */}
 			data = appendVersion(data, versionIETFFrames)
-			data = append(data, 0x0)                // connection ID lengths
-			data = append(data, encodeVarInt(0)...) // length
+			data = append(data, 0x0)                   // connection ID lengths
+			data = append(data, encodeVarInt(2)...)    // length
+			data = append(data, []byte{0x12, 0x34}...) // packet number
 			hdr, _, _, err := ParsePacket(data, 0)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(hdr.Type).To(Equal(protocol.PacketTypeHandshake))
-			_, err = hdr.ParseExtended(bytes.NewReader(data), versionIETFFrames)
-			Expect(err).To(MatchError("5th and 6th bit must be 0"))
+			extHdr, err := hdr.ParseExtended(bytes.NewReader(data), versionIETFFrames)
+			Expect(err).To(MatchError(ErrInvalidReservedBits))
+			Expect(extHdr).ToNot(BeNil())
+			Expect(extHdr.PacketNumber).To(Equal(protocol.PacketNumber(0x1234)))
 		})
 
 		It("errors on EOF, when parsing the header", func() {
@@ -425,7 +428,7 @@ var _ = Describe("Header Parsing", func() {
 			b := bytes.NewReader(data)
 			extHdr, err := hdr.ParseExtended(b, versionIETFFrames)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(extHdr.KeyPhase).To(Equal(0))
+			Expect(extHdr.KeyPhase).To(Equal(protocol.KeyPhaseZero))
 			Expect(extHdr.DestConnectionID).To(Equal(connID))
 			Expect(extHdr.SrcConnectionID).To(BeEmpty())
 			Expect(extHdr.PacketNumber).To(Equal(protocol.PacketNumber(0x42)))
@@ -443,11 +446,14 @@ var _ = Describe("Header Parsing", func() {
 		It("errors if the 4th or 5th bit are set", func() {
 			connID := protocol.ConnectionID{1, 2, 3, 4, 5}
 			data := append([]byte{0x40 | 0x10 /* set the 4th bit */}, connID...)
+			data = append(data, 0x42) // packet number
 			hdr, _, _, err := ParsePacket(data, 5)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(hdr.IsLongHeader).To(BeFalse())
-			_, err = hdr.ParseExtended(bytes.NewReader(data), versionIETFFrames)
-			Expect(err).To(MatchError("4th and 5th bit must be 0"))
+			extHdr, err := hdr.ParseExtended(bytes.NewReader(data), versionIETFFrames)
+			Expect(err).To(MatchError(ErrInvalidReservedBits))
+			Expect(extHdr).ToNot(BeNil())
+			Expect(extHdr.PacketNumber).To(Equal(protocol.PacketNumber(0x42)))
 		})
 
 		It("reads a Short Header with a 5 byte connection ID", func() {
@@ -462,7 +468,7 @@ var _ = Describe("Header Parsing", func() {
 			b := bytes.NewReader(data)
 			extHdr, err := hdr.ParseExtended(b, versionIETFFrames)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(extHdr.KeyPhase).To(Equal(0))
+			Expect(extHdr.KeyPhase).To(Equal(protocol.KeyPhaseZero))
 			Expect(extHdr.DestConnectionID).To(Equal(connID))
 			Expect(extHdr.SrcConnectionID).To(BeEmpty())
 			Expect(rest).To(BeEmpty())
@@ -480,7 +486,7 @@ var _ = Describe("Header Parsing", func() {
 			b := bytes.NewReader(data)
 			extHdr, err := hdr.ParseExtended(b, versionIETFFrames)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(extHdr.KeyPhase).To(Equal(1))
+			Expect(extHdr.KeyPhase).To(Equal(protocol.KeyPhaseOne))
 			Expect(b.Len()).To(BeZero())
 		})
 

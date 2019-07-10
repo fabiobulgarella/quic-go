@@ -10,6 +10,12 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/utils"
 )
 
+// ErrInvalidReservedBits is returned when the reserved bits are incorrect.
+// When this error is returned, parsing continues, and an ExtendedHeader is returned.
+// This is necessary because we need to decrypt the packet in that case,
+// in order to avoid a timing side-channel.
+var ErrInvalidReservedBits = errors.New("invalid reserved bits")
+
 // ExtendedHeader is the header of a QUIC packet.
 type ExtendedHeader struct {
 	Header
@@ -19,7 +25,7 @@ type ExtendedHeader struct {
 	PacketNumberLen protocol.PacketNumberLen
 	PacketNumber    protocol.PacketNumber
 
-	KeyPhase int
+	KeyPhase protocol.KeyPhaseBit
 
 	// spin bit and packet loss related fields
 	SpinBit     bool
@@ -43,30 +49,33 @@ func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (*Exte
 }
 
 func (h *ExtendedHeader) parseLongHeader(b *bytes.Reader, v protocol.VersionNumber) (*ExtendedHeader, error) {
-	if h.typeByte&0xc != 0 {
-		return nil, errors.New("5th and 6th bit must be 0")
-	}
 	if err := h.readPacketNumber(b); err != nil {
 		return nil, err
 	}
-	return h, nil
+	var err error
+	if h.typeByte&0xc != 0 {
+		err = ErrInvalidReservedBits
+	}
+	return h, err
 }
 
 func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, v protocol.VersionNumber) (*ExtendedHeader, error) {
-	/*
-	if h.typeByte&0x18 != 0 {
-		return nil, errors.New("4th and 5th bit must be 0")
+	h.KeyPhase = protocol.KeyPhaseZero
+	if h.typeByte&0x4 > 0 {
+		h.KeyPhase = protocol.KeyPhaseOne
 	}
-	*/
 
 	h.SpinBit = h.typeByte&0x20 > 0
 	h.LossBit = h.typeByte&0x10 > 0
-	h.KeyPhase = int(h.typeByte&0x4) >> 2
 
 	if err := h.readPacketNumber(b); err != nil {
 		return nil, err
 	}
-	return h, nil
+	var err error
+	if h.typeByte&0x18 != 0 {
+		//err = ErrInvalidReservedBits
+	}
+	return h, err
 }
 
 func (h *ExtendedHeader) readPacketNumber(b *bytes.Reader) error {
@@ -137,6 +146,9 @@ func (h *ExtendedHeader) writeLongHeader(b *bytes.Buffer, v protocol.VersionNumb
 // TODO: add support for the key phase
 func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, v protocol.VersionNumber) error {
 	typeByte := 0x40 | uint8(h.PacketNumberLen-1)
+	if h.KeyPhase == protocol.KeyPhaseOne {
+		typeByte |= byte(1 << 2)
+	}
 
 	if h.SpinBit {
 		typeByte |= 0x20
@@ -144,8 +156,6 @@ func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, v protocol.VersionNum
 	if h.LossBit {
 		typeByte |= 0x10
 	}
-
-	typeByte |= byte(h.KeyPhase << 2)
 
 	b.WriteByte(typeByte)
 	b.Write(h.DestConnectionID.Bytes())
@@ -192,7 +202,7 @@ func (h *ExtendedHeader) Log(logger utils.Logger) {
 		}
 		logger.Debugf("\tLong Header{Type: %s, DestConnectionID: %s, SrcConnectionID: %s, %sPacketNumber: %#x, PacketNumberLen: %d, Length: %d, Version: %s}", h.Type, h.DestConnectionID, h.SrcConnectionID, token, h.PacketNumber, h.PacketNumberLen, h.Length, h.Version)
 	} else {
-		logger.Debugf("\tShort Header{DestConnectionID: %s, PacketNumber: %#x, PacketNumberLen: %d, KeyPhase: %d}", h.DestConnectionID, h.PacketNumber, h.PacketNumberLen, h.KeyPhase)
+		logger.Debugf("\tShort Header{DestConnectionID: %s, PacketNumber: %#x, PacketNumberLen: %d, KeyPhase: %s}", h.DestConnectionID, h.PacketNumber, h.PacketNumberLen, h.KeyPhase)
 	}
 }
 
