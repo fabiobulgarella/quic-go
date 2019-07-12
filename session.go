@@ -691,6 +691,9 @@ func (s *session) handleUnpackedPacket(packet *unpackedPacket, rcvTime time.Time
 		if packet.packetNumber == s.unpacker.GetLargestRcvdPacketNumber() {
 			s.packer.HandleSpinBit(packet.hdr.SpinBit)
 		}
+		if packet.hdr.DelaySample {
+			s.packer.HandleDelaySample(packet.hdr.SpinBit)
+		}
 		s.packer.HandleIncomingLossBit(packet.hdr.LossBit)
 	}
 

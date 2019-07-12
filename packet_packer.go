@@ -25,6 +25,7 @@ type packer interface {
 	ChangeDestConnectionID(protocol.ConnectionID)
 
 	HandleSpinBit(bool)
+	HandleDelaySample(bool)
 	HandleIncomingLossBit(bool)
 }
 
@@ -137,8 +138,15 @@ type packetPacker struct {
 	maxPacketSize          protocol.ByteCount
 	numNonAckElicitingAcks int
 
-	// spin bit and packet loss bits related fields
+	// spin bit, delay sample, and packet loss bits related fields
 	spinBit             bool
+
+	delaySample      bool
+	gotDelaySample   bool
+	skipDelaySample  bool
+	forceDelaySample bool
+	lastDelaySample  time.Time
+
 	lossPause           bool
 	reflectionPhase     bool
 	genPacketCounter    uint
@@ -477,6 +485,7 @@ func (p *packetPacker) getShortHeader(kp protocol.KeyPhaseBit) *wire.ExtendedHea
 	hdr.DestConnectionID = p.destConnID
 	hdr.KeyPhase = kp
 	hdr.SpinBit = p.spinBit
+	hdr.DelaySample = p.delaySample
 	return hdr
 }
 
@@ -531,7 +540,23 @@ func (p *packetPacker) writeAndSealPacket(
 	}
 
 	if !header.IsLongHeader {
-		// handle outgoing loss bits
+		// delay sample check
+		if header.DelaySample {
+			// if it's a short header and delaySample is set, reset it inside packetPacker
+			p.delaySample = false
+			// check if it has to be sent (considered sendingDelay and forceDelaySample flag)
+			sendingDelay := time.Since(p.lastDelaySample)
+			if sendingDelay > time.Millisecond {
+				if !p.forceDelaySample {
+					//log.Printf("MaxSendingDelay elapsed: not sending this DelaySample -> SD: %v", sendingDelay)
+					header.DelaySample = false
+				} else {
+					p.forceDelaySample = false
+				}
+			}
+		}
+
+		// handle outgoing loss bit
 		header.LossBit = p.handleOutgoingLossBit()
 	}
 
@@ -611,11 +636,41 @@ func (p *packetPacker) HandleTransportParameters(params *handshake.TransportPara
 
 func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 	if p.perspective == protocol.PerspectiveClient {
+		if p.spinBit == hdrSpinBit {
+			// got an edge, check if ended marking period has got its delaySample
+			if !p.gotDelaySample {
+				if p.skipDelaySample {
+					p.skipDelaySample = false
+					p.delaySample = true
+					p.forceDelaySample = true
+				} else {
+					p.skipDelaySample = true
+					//s.logger.Infof("No DelaySample found in last period: skipping next period!")
+				}
+			} else {
+				p.gotDelaySample = false
+			}
+		}
 		// client -> invert spinBit
 		p.spinBit = !hdrSpinBit
 	} else {
 		// server -> reflect spinBit
 		p.spinBit = hdrSpinBit
+	}
+}
+
+func (p *packetPacker) HandleDelaySample(hdrSpinBit bool) {
+	if p.perspective == protocol.PerspectiveClient {
+		if hdrSpinBit != p.spinBit {
+			// client -> reflect delaySample if next packet has the OPPOSITE spinBit
+			p.gotDelaySample = true
+			p.delaySample = true
+			p.lastDelaySample = time.Now()
+		}
+	} else if hdrSpinBit == p.spinBit {
+		// server -> reflect delaySample if next packet has the SAME spinBit
+		p.delaySample = true
+		p.lastDelaySample = time.Now()
 	}
 }
 
@@ -628,7 +683,6 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 					p.rflPacketCounter++
 				}
 			} else if !p.reflectionPhase {
-				p.genPacketCounter = 1
 				p.rflPacketCounter = 1
 				p.reflectionPhase = true
 				p.lossPause = true
@@ -642,11 +696,8 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 				//log.Printf("Ricevuto primo pacchetto riflesso; ancora da riflettere: %v", p.rflPacketCounter)
 			}
 		}
-
-		if !p.reflectionPhase && !p.lossPause {
-			if p.genPacketCounter < 2 {
-				p.genPacketCounter++
-			}
+		if p.genPacketCounter < 1 {
+			p.genPacketCounter++
 		}
 
 		// handle loss bits on server context
@@ -661,8 +712,6 @@ func (p *packetPacker) handleOutgoingLossBit() bool {
 		if p.lossPause {
 			now := time.Now().UnixNano()
 			if now > p.lossPauseEndTime {
-				p.firstPacketTime = now
-				p.lossPause = false
 				if p.reflectionPhase {
 					p.firstRflPckReceived = false
 					p.rflPacketCounter--
@@ -671,15 +720,23 @@ func (p *packetPacker) handleOutgoingLossBit() bool {
 						p.lossPause = true
 						p.lossPauseEndTime = now + p.lossRttTime * 2
 					}
-				} else {
+
+					p.firstPacketTime = now
+					p.lossPause = false
+					return true
+				} else if p.genPacketCounter > 0 {
 					p.genPacketCounter--
+
+					p.firstPacketTime = now
+					p.lossPause = false
+					return true
 				}
-				return true
 			}
 		} else {
 			if p.reflectionPhase {
-				if p.rflPacketCounter > 0 {
+				if p.rflPacketCounter > 0 && p.genPacketCounter > 0 {
 					p.rflPacketCounter--
+					p.genPacketCounter--
 					if p.rflPacketCounter == 0 {
 						p.reflectionPhase = false
 						p.lossPause = true

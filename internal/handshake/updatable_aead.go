@@ -246,7 +246,7 @@ func (a *updatableAEAD) EncryptHeader(sample []byte, firstByte *byte, pnBytes []
 		panic("invalid sample size")
 	}
 	a.hpEncrypter.Encrypt(a.hpMask, sample)
-	*firstByte ^= a.hpMask[0] & 0xf // changed from 0x1f so packet loss bit is not encrypted
+	*firstByte ^= a.hpMask[0] & 0x7 // changed from 0x1f so packet loss bit is not encrypted
 	for i := range pnBytes {
 		pnBytes[i] ^= a.hpMask[i+1]
 	}
@@ -257,7 +257,7 @@ func (a *updatableAEAD) DecryptHeader(sample []byte, firstByte *byte, pnBytes []
 		panic("invalid sample size")
 	}
 	a.hpDecrypter.Encrypt(a.hpMask, sample)
-	*firstByte ^= a.hpMask[0] & 0xf // changed from 0x1f because packet loss bit is not encrypted
+	*firstByte ^= a.hpMask[0] & 0x7 // changed from 0x1f because packet loss bit is not encrypted
 	for i := range pnBytes {
 		pnBytes[i] ^= a.hpMask[i+1]
 	}
