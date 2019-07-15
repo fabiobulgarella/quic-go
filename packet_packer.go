@@ -140,21 +140,19 @@ type packetPacker struct {
 
 	// spin bit, delay sample, and packet loss bits related fields
 	spinBit             bool
+	spinEdge            bool
 
-	delaySample      bool
-	gotDelaySample   bool
-	skipDelaySample  bool
-	forceDelaySample bool
-	lastDelaySample  time.Time
+	delaySample         bool
+	gotDelaySample      bool
+	skipDelaySample     bool
+	forceDelaySample    bool
+	lastDelaySample     time.Time
 
 	lossPause           bool
 	reflectionPhase     bool
 	genPacketCounter    uint
 	rflPacketCounter    uint
-	firstRflPckReceived bool
-	firstPacketTime     int64
-	lossPauseEndTime    int64
-	lossRttTime         int64
+	rflCounterLock      bool
 }
 
 var _ packer = &packetPacker{}
@@ -650,6 +648,7 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 			} else {
 				p.gotDelaySample = false
 			}
+			p.spinEdge = true // needed by new loss bit logic
 		}
 		// client -> invert spinBit
 		p.spinBit = !hdrSpinBit
@@ -677,26 +676,26 @@ func (p *packetPacker) HandleDelaySample(hdrSpinBit bool) {
 func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 	// handle loss bit on client context
 	if p.perspective == protocol.PerspectiveClient {
-		if hdrLossBit {
+		if p.spinEdge {
+			p.spinEdge = false
 			if p.lossPause {
-				if p.reflectionPhase {
-					p.rflPacketCounter++
+				p.lossPause = false
+			} else if p.reflectionPhase {
+				p.rflCounterLock = true
+				if p.rflPacketCounter == 0 {
+					p.lossPause = true
+					p.reflectionPhase = false
 				}
-			} else if !p.reflectionPhase {
-				p.rflPacketCounter = 1
-				p.reflectionPhase = true
+			} else {
 				p.lossPause = true
-				now := time.Now().UnixNano()
-				p.lossRttTime = now - p.firstPacketTime
-				p.lossPauseEndTime = now + p.lossRttTime * 2
-			} else if !p.firstRflPckReceived {
-				p.firstRflPckReceived = true
-				now := time.Now().UnixNano()
-				p.lossRttTime = now - p.firstPacketTime
-				//log.Printf("Ricevuto primo pacchetto riflesso; ancora da riflettere: %v", p.rflPacketCounter)
+				p.reflectionPhase = true
+				p.rflCounterLock = false
 			}
 		}
-		if p.genPacketCounter < 1 {
+		if hdrLossBit && !p.rflCounterLock {
+			p.rflPacketCounter++
+		}
+		if p.genPacketCounter < 2 {
 			p.genPacketCounter++
 		}
 
@@ -709,39 +708,11 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 func (p *packetPacker) handleOutgoingLossBit() bool {
 	// handle loss bits on client context
 	if p.perspective == protocol.PerspectiveClient {
-		if p.lossPause {
-			now := time.Now().UnixNano()
-			if now > p.lossPauseEndTime {
-				if p.reflectionPhase {
-					p.firstRflPckReceived = false
-					p.rflPacketCounter--
-					if p.rflPacketCounter == 0 {
-						p.reflectionPhase = false
-						p.lossPause = true
-						p.lossPauseEndTime = now + p.lossRttTime * 2
-					}
-
-					p.firstPacketTime = now
-					p.lossPause = false
-					return true
-				} else if p.genPacketCounter > 0 {
-					p.genPacketCounter--
-
-					p.firstPacketTime = now
-					p.lossPause = false
-					return true
-				}
-			}
-		} else {
+		if !p.lossPause {
 			if p.reflectionPhase {
 				if p.rflPacketCounter > 0 && p.genPacketCounter > 0 {
 					p.rflPacketCounter--
 					p.genPacketCounter--
-					if p.rflPacketCounter == 0 {
-						p.reflectionPhase = false
-						p.lossPause = true
-						p.lossPauseEndTime = time.Now().UnixNano() + p.lossRttTime * 2
-					}
 					return true
 				}
 			} else if p.genPacketCounter > 0 {
