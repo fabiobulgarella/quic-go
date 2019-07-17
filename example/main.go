@@ -126,7 +126,7 @@ func setupHandler(www string, trace bool) http.Handler {
 	// maximum accepted file size is 1 GB
 	mux.HandleFunc("/demo/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			err := r.ParseMultipartForm(1 << 30) // 1 GB
+			err := r.ParseMultipartForm(1 << 32) // 1 GB
 			if err == nil {
 				var file multipart.File
 				file, _, err = r.FormFile("uploadfile")

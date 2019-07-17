@@ -148,7 +148,7 @@ type packetPacker struct {
 	forceDelaySample    bool
 	lastDelaySample     time.Time
 
-	lossPause           bool
+	lossPause           uint
 	reflectionPhase     bool
 	genPacketCounter    uint
 	rflPacketCounter    uint
@@ -182,7 +182,7 @@ func newPacketPacker(
 		acks:            acks,
 		pnManager:       packetNumberManager,
 		maxPacketSize:   getMaxPacketSize(remoteAddr),
-		lossPause:       true,
+		lossPause:       1,
 		genPacketCounter: 1,
 	}
 }
@@ -678,16 +678,16 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 	if p.perspective == protocol.PerspectiveClient {
 		if p.spinEdge {
 			p.spinEdge = false
-			if p.lossPause {
-				p.lossPause = false
+			if p.lossPause > 0 {
+				p.lossPause--
 			} else if p.reflectionPhase {
 				p.rflCounterLock = true
 				if p.rflPacketCounter == 0 {
-					p.lossPause = true
+					p.lossPause = 2
 					p.reflectionPhase = false
 				}
 			} else {
-				p.lossPause = true
+				p.lossPause = 2
 				p.reflectionPhase = true
 				p.rflCounterLock = false
 			}
@@ -695,7 +695,7 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 		if hdrLossBit && !p.rflCounterLock {
 			p.rflPacketCounter++
 		}
-		if p.genPacketCounter < 2 {
+		if p.genPacketCounter < 1 {
 			p.genPacketCounter++
 		}
 
@@ -708,7 +708,7 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 func (p *packetPacker) handleOutgoingLossBit() bool {
 	// handle loss bits on client context
 	if p.perspective == protocol.PerspectiveClient {
-		if !p.lossPause {
+		if p.lossPause == 0 {
 			if p.reflectionPhase {
 				if p.rflPacketCounter > 0 && p.genPacketCounter > 0 {
 					p.rflPacketCounter--
