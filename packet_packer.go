@@ -148,11 +148,12 @@ type packetPacker struct {
 	forceDelaySample    bool
 	lastDelaySample     time.Time
 
-	lossPause           uint
+	lossPause           bool
 	reflectionPhase     bool
 	genPacketCounter    uint
 	rflPacketCounter    uint
 	rflCounterLock      bool
+	freeLastSpinPeriod  bool
 }
 
 var _ packer = &packetPacker{}
@@ -182,8 +183,9 @@ func newPacketPacker(
 		acks:            acks,
 		pnManager:       packetNumberManager,
 		maxPacketSize:   getMaxPacketSize(remoteAddr),
-		lossPause:       1,
+		lossPause:       true,
 		genPacketCounter: 1,
+		freeLastSpinPeriod: true,
 	}
 }
 
@@ -678,26 +680,31 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 	if p.perspective == protocol.PerspectiveClient {
 		if p.spinEdge {
 			p.spinEdge = false
-			if p.lossPause > 0 {
-				p.lossPause--
+			if p.lossPause {
+				if p.freeLastSpinPeriod {
+					p.lossPause = false
+				}
 			} else if p.reflectionPhase {
 				p.rflCounterLock = true
 				if p.rflPacketCounter == 0 {
-					p.lossPause = 2
+					p.lossPause = true
 					p.reflectionPhase = false
 				}
 			} else {
-				p.lossPause = 2
+				p.lossPause = true
 				p.reflectionPhase = true
 				p.rflCounterLock = false
 			}
+			p.freeLastSpinPeriod = true
 		}
-		if hdrLossBit && !p.rflCounterLock {
-			p.rflPacketCounter++
+		if hdrLossBit {
+			if !p.rflCounterLock {
+				p.rflPacketCounter++
+			}
+			p.freeLastSpinPeriod = false
 		}
-		if p.genPacketCounter < 1 {
-			p.genPacketCounter++
-		}
+		// restore generation token
+		p.genPacketCounter = 1
 
 		// handle loss bits on server context
 	} else if hdrLossBit {
@@ -708,7 +715,7 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 func (p *packetPacker) handleOutgoingLossBit() bool {
 	// handle loss bits on client context
 	if p.perspective == protocol.PerspectiveClient {
-		if p.lossPause == 0 {
+		if !p.lossPause {
 			if p.reflectionPhase {
 				if p.rflPacketCounter > 0 && p.genPacketCounter > 0 {
 					p.rflPacketCounter--
