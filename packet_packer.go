@@ -262,6 +262,7 @@ func (p *packetPacker) MaybePackAckPacket() (*packedPacket, error) {
 // For packets sent after completion of the handshake, it might happen that 2 packets have to be sent.
 // This can happen e.g. when a longer packet number is used in the header.
 func (p *packetPacker) PackRetransmission(packet *ackhandler.Packet) ([]*packedPacket, error) {
+	//fmt.Printf("Packet Retransmission!\n")
 	var controlFrames []wire.Frame
 	var streamFrames []*wire.StreamFrame
 	for _, f := range packet.Frames {
@@ -686,14 +687,15 @@ func (p *packetPacker) HandleIncomingLossBit(hdrLossBit bool) {
 				}
 			} else if p.reflectionPhase {
 				p.rflCounterLock = true
-				if p.rflPacketCounter == 0 {
+				if p.rflPacketCounter == 0 { // stop reflecting
 					p.lossPause = true
 					p.reflectionPhase = false
 				}
-			} else {
+			} else if p.rflCounterLock { // unlock rflCounter and continue generating
+				p.rflCounterLock = false
+			} else { // stop generating
 				p.lossPause = true
 				p.reflectionPhase = true
-				p.rflCounterLock = false
 			}
 			p.freeLastSpinPeriod = true
 		}
