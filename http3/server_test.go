@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -25,8 +26,7 @@ import (
 
 var _ = Describe("Server", func() {
 	var (
-		s *Server
-		// session            *mockquic.MockSession
+		s                  *Server
 		origQuicListenAddr = quicListenAddr
 	)
 
@@ -119,7 +119,7 @@ var _ = Describe("Server", func() {
 				return len(p), nil
 			}).AnyTimes()
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Succeed())
+			Expect(s.handleRequest(str, qpackDecoder)).To(Equal(requestError{}))
 			var req *http.Request
 			Eventually(requestChan).Should(Receive(&req))
 			Expect(req.Host).To(Equal("www.example.com"))
@@ -135,7 +135,8 @@ var _ = Describe("Server", func() {
 				return responseBuf.Write(p)
 			}).AnyTimes()
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Succeed())
+			serr := s.handleRequest(str, qpackDecoder)
+			Expect(serr.err).ToNot(HaveOccurred())
 			hfs := decodeHeader(responseBuf)
 			Expect(hfs).To(HaveKeyWithValue(":status", []string{"200"}))
 		})
@@ -153,65 +154,129 @@ var _ = Describe("Server", func() {
 			}).AnyTimes()
 			str.EXPECT().CancelRead(gomock.Any())
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Succeed())
+			serr := s.handleRequest(str, qpackDecoder)
+			Expect(serr.err).ToNot(HaveOccurred())
 			hfs := decodeHeader(responseBuf)
 			Expect(hfs).To(HaveKeyWithValue(":status", []string{"500"}))
 		})
 
-		It("cancels reading when client sends a body in GET request", func() {
-			handlerCalled := make(chan struct{})
-			s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				close(handlerCalled)
+		Context("stream- and connection-level errors", func() {
+			var sess *mockquic.MockSession
+
+			BeforeEach(func() {
+				sess = mockquic.NewMockSession(mockCtrl)
+				controlStr := mockquic.NewMockStream(mockCtrl)
+				controlStr.EXPECT().Write(gomock.Any())
+				sess.EXPECT().OpenUniStream().Return(controlStr, nil)
+				sess.EXPECT().AcceptStream(gomock.Any()).Return(str, nil)
+				sess.EXPECT().AcceptStream(gomock.Any()).Return(nil, errors.New("done"))
 			})
 
-			requestData := encodeRequest(exampleGetRequest)
-			buf := &bytes.Buffer{}
-			(&dataFrame{Length: 6}).Write(buf) // add a body
-			buf.Write([]byte("foobar"))
-			responseBuf := &bytes.Buffer{}
-			setRequest(append(requestData, buf.Bytes()...))
-			str.EXPECT().Context().Return(reqContext)
-			str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
-				return responseBuf.Write(p)
-			}).AnyTimes()
-			str.EXPECT().CancelRead(quic.ErrorCode(errorEarlyResponse))
+			It("cancels reading when client sends a body in GET request", func() {
+				handlerCalled := make(chan struct{})
+				s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					close(handlerCalled)
+				})
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Succeed())
-			hfs := decodeHeader(responseBuf)
-			Expect(hfs).To(HaveKeyWithValue(":status", []string{"200"}))
-		})
+				requestData := encodeRequest(exampleGetRequest)
+				buf := &bytes.Buffer{}
+				(&dataFrame{Length: 6}).Write(buf) // add a body
+				buf.Write([]byte("foobar"))
+				responseBuf := &bytes.Buffer{}
+				setRequest(append(requestData, buf.Bytes()...))
+				done := make(chan struct{})
+				str.EXPECT().Context().Return(reqContext)
+				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
+					return responseBuf.Write(p)
+				}).AnyTimes()
+				str.EXPECT().CancelRead(quic.ErrorCode(errorEarlyResponse))
+				str.EXPECT().Close().Do(func() { close(done) })
 
-		It("cancels reading when the body of POST request is not read", func() {
-			handlerCalled := make(chan struct{})
-			s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				Expect(r.Host).To(Equal("www.example.com"))
-				Expect(r.Method).To(Equal("POST"))
-				close(handlerCalled)
+				s.handleConn(sess)
+				Eventually(done).Should(BeClosed())
+				hfs := decodeHeader(responseBuf)
+				Expect(hfs).To(HaveKeyWithValue(":status", []string{"200"}))
 			})
 
-			setRequest(encodeRequest(examplePostRequest))
-			str.EXPECT().Context().Return(reqContext)
-			str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
-				return len(p), nil
-			}).AnyTimes()
-			str.EXPECT().CancelRead(quic.ErrorCode(errorEarlyResponse))
+			It("errors when the client sends a too large header frame", func() {
+				s.Server.MaxHeaderBytes = 42
+				s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					Fail("Handler should not be called.")
+				})
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Succeed())
-			Eventually(handlerCalled).Should(BeClosed())
-		})
+				requestData := encodeRequest(exampleGetRequest)
+				buf := &bytes.Buffer{}
+				(&dataFrame{Length: 6}).Write(buf) // add a body
+				buf.Write([]byte("foobar"))
+				responseBuf := &bytes.Buffer{}
+				setRequest(append(requestData, buf.Bytes()...))
+				done := make(chan struct{})
+				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
+					return responseBuf.Write(p)
+				}).AnyTimes()
+				str.EXPECT().CancelWrite(quic.ErrorCode(errorFrameError)).Do(func(quic.ErrorCode) { close(done) })
 
-		It("handles a request for which the client immediately resets the stream", func() {
-			handlerCalled := make(chan struct{})
-			s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				close(handlerCalled)
+				s.handleConn(sess)
+				Eventually(done).Should(BeClosed())
 			})
 
-			testErr := errors.New("stream reset")
-			str.EXPECT().Read(gomock.Any()).Return(0, testErr)
-			str.EXPECT().CancelWrite(quic.ErrorCode(errorRequestCanceled))
+			It("handles a request for which the client immediately resets the stream", func() {
+				handlerCalled := make(chan struct{})
+				s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					close(handlerCalled)
+				})
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(MatchError(testErr))
-			Consistently(handlerCalled).ShouldNot(BeClosed())
+				testErr := errors.New("stream reset")
+				done := make(chan struct{})
+				str.EXPECT().Read(gomock.Any()).Return(0, testErr)
+				str.EXPECT().CancelWrite(quic.ErrorCode(errorRequestIncomplete)).Do(func(quic.ErrorCode) { close(done) })
+
+				s.handleConn(sess)
+				Consistently(handlerCalled).ShouldNot(BeClosed())
+			})
+
+			It("closes the connection when the first frame is not a HEADERS frame", func() {
+				handlerCalled := make(chan struct{})
+				s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					close(handlerCalled)
+				})
+
+				buf := &bytes.Buffer{}
+				(&dataFrame{}).Write(buf)
+				setRequest(buf.Bytes())
+				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
+					return len(p), nil
+				}).AnyTimes()
+
+				done := make(chan struct{})
+				sess.EXPECT().CloseWithError(gomock.Any(), gomock.Any()).Do(func(code quic.ErrorCode, _ string) {
+					Expect(code).To(Equal(quic.ErrorCode(errorUnexpectedFrame)))
+					close(done)
+				})
+				s.handleConn(sess)
+				Eventually(done).Should(BeClosed())
+			})
+
+			It("closes the connection when the first frame is not a HEADERS frame", func() {
+				handlerCalled := make(chan struct{})
+				s.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					close(handlerCalled)
+				})
+
+				url := bytes.Repeat([]byte{'a'}, http.DefaultMaxHeaderBytes+1)
+				req, err := http.NewRequest(http.MethodGet, "https://"+string(url), nil)
+				Expect(err).ToNot(HaveOccurred())
+				setRequest(encodeRequest(req))
+				// str.EXPECT().Context().Return(reqContext)
+				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
+					return len(p), nil
+				}).AnyTimes()
+				done := make(chan struct{})
+				str.EXPECT().CancelWrite(quic.ErrorCode(errorFrameError)).Do(func(quic.ErrorCode) { close(done) })
+
+				s.handleConn(sess)
+				Eventually(done).Should(BeClosed())
+			})
 		})
 
 		It("resets the stream when the body of POST request is not read, and the request handler replaces the request.Body", func() {
@@ -231,7 +296,8 @@ var _ = Describe("Server", func() {
 			}).AnyTimes()
 			str.EXPECT().CancelRead(quic.ErrorCode(errorEarlyResponse))
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Succeed())
+			serr := s.handleRequest(str, qpackDecoder)
+			Expect(serr.err).ToNot(HaveOccurred())
 			Eventually(handlerCalled).Should(BeClosed())
 		})
 
@@ -253,7 +319,8 @@ var _ = Describe("Server", func() {
 			}).AnyTimes()
 			str.EXPECT().CancelRead(quic.ErrorCode(errorEarlyResponse))
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Succeed())
+			serr := s.handleRequest(str, qpackDecoder)
+			Expect(serr.err).ToNot(HaveOccurred())
 			Eventually(handlerCalled).Should(BeClosed())
 		})
 	})
@@ -320,10 +387,99 @@ var _ = Describe("Server", func() {
 		Expect((&Server{}).Close()).To(Succeed())
 	})
 
-	It("errors when ListenAndServer is called after Close", func() {
+	It("errors when ListenAndServe is called after Close", func() {
 		serv := &Server{Server: &http.Server{}}
 		Expect(serv.Close()).To(Succeed())
-		Expect(serv.ListenAndServe()).To(MatchError("Server is already closed"))
+		Expect(serv.ListenAndServe()).To(MatchError(http.ErrServerClosed))
+	})
+
+	Context("Serve", func() {
+		origQuicListen := quicListen
+
+		AfterEach(func() {
+			quicListen = origQuicListen
+		})
+
+		It("serves a packet conn", func() {
+			ln := mockquic.NewMockListener(mockCtrl)
+			conn := &net.UDPConn{}
+			quicListen = func(c net.PacketConn, tlsConf *tls.Config, config *quic.Config) (quic.Listener, error) {
+				Expect(c).To(Equal(conn))
+				return ln, nil
+			}
+
+			s := &Server{Server: &http.Server{}}
+			s.TLSConfig = &tls.Config{}
+
+			stopAccept := make(chan struct{})
+			ln.EXPECT().Accept(gomock.Any()).DoAndReturn(func(context.Context) (quic.Session, error) {
+				<-stopAccept
+				return nil, errors.New("closed")
+			})
+			done := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				defer close(done)
+				s.Serve(conn)
+			}()
+
+			Consistently(done).ShouldNot(BeClosed())
+			ln.EXPECT().Close().Do(func() { close(stopAccept) })
+			Expect(s.Close()).To(Succeed())
+			Eventually(done).Should(BeClosed())
+		})
+
+		It("serves two packet conns", func() {
+			ln1 := mockquic.NewMockListener(mockCtrl)
+			ln2 := mockquic.NewMockListener(mockCtrl)
+			lns := []quic.Listener{ln1, ln2}
+			conn1 := &net.UDPConn{}
+			conn2 := &net.UDPConn{}
+			conns := []net.PacketConn{conn1, conn2}
+			quicListen = func(c net.PacketConn, tlsConf *tls.Config, config *quic.Config) (quic.Listener, error) {
+				conn := conns[0]
+				conns = conns[1:]
+				ln := lns[0]
+				lns = lns[1:]
+				Expect(c).To(Equal(conn))
+				return ln, nil
+			}
+
+			s := &Server{Server: &http.Server{}}
+			s.TLSConfig = &tls.Config{}
+
+			stopAccept1 := make(chan struct{})
+			ln1.EXPECT().Accept(gomock.Any()).DoAndReturn(func(context.Context) (quic.Session, error) {
+				<-stopAccept1
+				return nil, errors.New("closed")
+			})
+			stopAccept2 := make(chan struct{})
+			ln2.EXPECT().Accept(gomock.Any()).DoAndReturn(func(context.Context) (quic.Session, error) {
+				<-stopAccept2
+				return nil, errors.New("closed")
+			})
+
+			done1 := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				defer close(done1)
+				s.Serve(conn1)
+			}()
+			done2 := make(chan struct{})
+			go func() {
+				defer GinkgoRecover()
+				defer close(done2)
+				s.Serve(conn2)
+			}()
+
+			Consistently(done1).ShouldNot(BeClosed())
+			Expect(done2).ToNot(BeClosed())
+			ln1.EXPECT().Close().Do(func() { close(stopAccept1) })
+			ln2.EXPECT().Close().Do(func() { close(stopAccept2) })
+			Expect(s.Close()).To(Succeed())
+			Eventually(done1).Should(BeClosed())
+			Eventually(done2).Should(BeClosed())
+		})
 	})
 
 	Context("ListenAndServe", func() {
@@ -332,20 +488,6 @@ var _ = Describe("Server", func() {
 		})
 
 		AfterEach(func() {
-			Expect(s.Close()).To(Succeed())
-		})
-
-		It("may only be called once", func() {
-			cErr := make(chan error)
-			for i := 0; i < 2; i++ {
-				go func() {
-					defer GinkgoRecover()
-					if err := s.ListenAndServe(); err != nil {
-						cErr <- err
-					}
-				}()
-			}
-			Eventually(cErr).Should(Receive(MatchError("ListenAndServe may only be called once")))
 			Expect(s.Close()).To(Succeed())
 		})
 
@@ -361,15 +503,18 @@ var _ = Describe("Server", func() {
 			Expect(receivedConf).To(Equal(conf))
 		})
 
-		It("adds the ALPN token to the tls.Config", func() {
+		It("replaces the ALPN token to the tls.Config", func() {
+			tlsConf := &tls.Config{NextProtos: []string{"foo", "bar"}}
 			var receivedConf *tls.Config
 			quicListenAddr = func(addr string, tlsConf *tls.Config, _ *quic.Config) (quic.Listener, error) {
 				receivedConf = tlsConf
 				return nil, errors.New("listen err")
 			}
-			s.TLSConfig = &tls.Config{NextProtos: []string{"foo", "bar"}}
+			s.TLSConfig = tlsConf
 			Expect(s.ListenAndServe()).To(HaveOccurred())
-			Expect(receivedConf.NextProtos).To(Equal([]string{"foo", "bar", nextProtoH3}))
+			Expect(receivedConf.NextProtos).To(Equal([]string{nextProtoH3}))
+			// make sure the original tls.Config was not modified
+			Expect(tlsConf.NextProtos).To(Equal([]string{"foo", "bar"}))
 		})
 
 		It("uses the ALPN token if no tls.Config is given", func() {
@@ -381,29 +526,29 @@ var _ = Describe("Server", func() {
 			Expect(s.ListenAndServe()).To(HaveOccurred())
 			Expect(receivedConf.NextProtos).To(Equal([]string{nextProtoH3}))
 		})
-	})
 
-	Context("ListenAndServeTLS", func() {
-		BeforeEach(func() {
-			s.Server.Addr = "localhost:0"
-		})
-
-		AfterEach(func() {
-			Expect(s.Close()).To(Succeed())
-		})
-
-		It("may only be called once", func() {
-			cErr := make(chan error)
-			for i := 0; i < 2; i++ {
-				go func() {
-					defer GinkgoRecover()
-					if err := s.ListenAndServeTLS(testdata.GetCertificatePaths()); err != nil {
-						cErr <- err
-					}
-				}()
+		It("sets the ALPN for tls.Configs returned by the tls.GetConfigForClient", func() {
+			tlsConf := &tls.Config{
+				GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
+					return &tls.Config{NextProtos: []string{"foo", "bar"}}, nil
+				},
 			}
-			Eventually(cErr).Should(Receive(MatchError("ListenAndServe may only be called once")))
-			Expect(s.Close()).To(Succeed())
+
+			var receivedConf *tls.Config
+			quicListenAddr = func(addr string, conf *tls.Config, _ *quic.Config) (quic.Listener, error) {
+				receivedConf = conf
+				return nil, errors.New("listen err")
+			}
+			s.TLSConfig = tlsConf
+			Expect(s.ListenAndServe()).To(HaveOccurred())
+			// check that the config used by QUIC uses the h3 ALPN
+			conf, err := receivedConf.GetConfigForClient(&tls.ClientHelloInfo{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(conf.NextProtos).To(Equal([]string{nextProtoH3}))
+			// check that the original config was not modified
+			conf, err = tlsConf.GetConfigForClient(&tls.ClientHelloInfo{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(conf.NextProtos).To(Equal([]string{"foo", "bar"}))
 		})
 	})
 

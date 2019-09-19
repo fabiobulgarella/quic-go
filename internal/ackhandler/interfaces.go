@@ -8,11 +8,22 @@ import (
 	"github.com/lucas-clemente/quic-go/quictrace"
 )
 
+// A Packet is a packet
+type Packet struct {
+	PacketNumber    protocol.PacketNumber
+	Frames          []Frame
+	LargestAcked    protocol.PacketNumber // InvalidPacketNumber if the packet doesn't contain an ACK
+	Length          protocol.ByteCount
+	EncryptionLevel protocol.EncryptionLevel
+	SendTime        time.Time
+
+	includedInBytesInFlight bool
+}
+
 // SentPacketHandler handles ACKs received for outgoing packets
 type SentPacketHandler interface {
 	// SentPacket may modify the packet
 	SentPacket(packet *Packet)
-	SentPacketsAsRetransmission(packets []*Packet, retransmissionOf protocol.PacketNumber)
 	ReceivedAck(ackFrame *wire.AckFrame, withPacketNumber protocol.PacketNumber, encLevel protocol.EncryptionLevel, recvTime time.Time) error
 	DropPackets(protocol.EncryptionLevel)
 	ResetForRetry() error
@@ -31,14 +42,13 @@ type SentPacketHandler interface {
 
 	// only to be called once the handshake is complete
 	GetLowestPacketNotConfirmedAcked() protocol.PacketNumber
-	DequeuePacketForRetransmission() *Packet
-	DequeueProbePacket() (*Packet, error)
+	QueueProbePacket() bool /* was a packet queued */
 
 	PeekPacketNumber(protocol.EncryptionLevel) (protocol.PacketNumber, protocol.PacketNumberLen)
 	PopPacketNumber(protocol.EncryptionLevel) protocol.PacketNumber
 
-	GetAlarmTimeout() time.Time
-	OnAlarm() error
+	GetLossDetectionTimeout() time.Time
+	OnLossDetectionTimeout() error
 
 	// report some congestion statistics. For tracing only.
 	GetStats() *quictrace.TransportState
@@ -46,7 +56,7 @@ type SentPacketHandler interface {
 
 // ReceivedPacketHandler handles ACKs needed to send for incoming packets
 type ReceivedPacketHandler interface {
-	ReceivedPacket(pn protocol.PacketNumber, encLevel protocol.EncryptionLevel, rcvTime time.Time, shouldInstigateAck bool) error
+	ReceivedPacket(pn protocol.PacketNumber, encLevel protocol.EncryptionLevel, rcvTime time.Time, shouldInstigateAck bool)
 	IgnoreBelow(protocol.PacketNumber)
 	DropPackets(protocol.EncryptionLevel)
 

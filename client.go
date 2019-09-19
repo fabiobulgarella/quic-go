@@ -89,6 +89,7 @@ func DialAddrContext(
 // The same PacketConn can be used for multiple calls to Dial and Listen,
 // QUIC connection IDs are used for demultiplexing the different connections.
 // The host parameter is used for SNI.
+// The tls.Config must define an application protocol (using NextProtos).
 func Dial(
 	pconn net.PacketConn,
 	remoteAddr net.Addr,
@@ -121,8 +122,8 @@ func dialContext(
 	config *Config,
 	createdPacketConn bool,
 ) (Session, error) {
-	if tlsConf == nil || len(tlsConf.NextProtos) == 0 {
-		return nil, errors.New("quic: NextProtos not set in tls.Config")
+	if tlsConf == nil {
+		return nil, errors.New("quic: tls.Config not set")
 	}
 	config = populateClientConfig(config, createdPacketConn)
 	packetHandlers, err := getMultiplexer().AddConn(pconn, config.ConnectionIDLength, config.StatelessResetKey)
@@ -252,6 +253,7 @@ func populateClientConfig(config *Config, createdPacketConn bool) *Config {
 		KeepAlive:                             config.KeepAlive,
 		StatelessResetKey:                     config.StatelessResetKey,
 		QuicTracer:                            config.QuicTracer,
+		TokenStore:                            config.TokenStore,
 	}
 }
 
@@ -291,7 +293,7 @@ func (c *client) establishSecureConnection(ctx context.Context) error {
 		return ctx.Err()
 	case err := <-errorChan:
 		return err
-	case <-c.handshakeChan:
+	case <-c.session.HandshakeComplete().Done():
 		// handshake successfully completed
 		return nil
 	}
@@ -339,6 +341,7 @@ func (c *client) handleVersionNegotiationPacket(p *receivedPacket) {
 	c.logger.Infof("Received a Version Negotiation packet. Supported Versions: %s", hdr.SupportedVersions)
 	newVersion, ok := protocol.ChooseSupportedVersion(c.config.Versions, hdr.SupportedVersions)
 	if !ok {
+		//nolint:stylecheck
 		c.session.destroy(fmt.Errorf("No compatible QUIC version found. We support %s, server offered %s", c.config.Versions, hdr.SupportedVersions))
 		c.logger.Debugf("No compatible QUIC version found.")
 		return
@@ -354,7 +357,7 @@ func (c *client) handleVersionNegotiationPacket(p *receivedPacket) {
 	c.initialPacketNumber = c.session.closeForRecreating()
 }
 
-func (c *client) createNewTLSSession(version protocol.VersionNumber) error {
+func (c *client) createNewTLSSession(_ protocol.VersionNumber) error {
 	params := &handshake.TransportParameters{
 		InitialMaxStreamDataBidiRemote: protocol.InitialMaxStreamData,
 		InitialMaxStreamDataBidiLocal:  protocol.InitialMaxStreamData,
@@ -370,13 +373,9 @@ func (c *client) createNewTLSSession(version protocol.VersionNumber) error {
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	runner := &runner{
-		packetHandlerManager:    c.packetHandlers,
-		onHandshakeCompleteImpl: func(_ Session) { close(c.handshakeChan) },
-	}
 	sess, err := newClientSession(
 		c.conn,
-		runner,
+		c.packetHandlers,
 		c.destConnID,
 		c.srcConnID,
 		c.config,

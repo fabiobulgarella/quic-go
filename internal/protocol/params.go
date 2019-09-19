@@ -73,9 +73,6 @@ const MaxOutstandingSentPackets = 2 * defaultMaxCongestionWindowPackets
 // This value *must* be larger than MaxOutstandingSentPackets.
 const MaxTrackedSentPackets = MaxOutstandingSentPackets * 5 / 4
 
-// MaxTrackedReceivedAckRanges is the maximum number of ACK ranges tracked
-const MaxTrackedReceivedAckRanges = defaultMaxCongestionWindowPackets
-
 // MaxNonAckElicitingAcks is the maximum number of packets containing an ACK,
 // but no ack-eliciting frames, that we send in a row
 const MaxNonAckElicitingAcks = 19
@@ -83,6 +80,11 @@ const MaxNonAckElicitingAcks = 19
 // MaxStreamFrameSorterGaps is the maximum number of gaps between received StreamFrames
 // prevents DoS attacks against the streamFrameSorter
 const MaxStreamFrameSorterGaps = 1000
+
+// MinStreamFrameBufferSize is the minimum data length of a received STREAM frame
+// that we use the buffer for. This protects against a DoS where an attacker would send us
+// very small STREAM frames to consume a lot of memory.
+const MinStreamFrameBufferSize = 128
 
 // MaxCryptoStreamOffset is the maximum offset allowed on any of the crypto streams.
 // This limits the size of the ClientHello and Certificates that can be received.
@@ -116,6 +118,11 @@ const MaxPostHandshakeCryptoFrameSize ByteCount = 1000
 // The MaxAckFrameSize should be large enough to encode many ACK range,
 // but must ensure that a maximum size ACK frame fits into one packet.
 const MaxAckFrameSize ByteCount = 1000
+
+// MaxNumAckRanges is the maximum number of ACK ranges that we send in an ACK frame.
+// It also serves as a limit for the packet history.
+// If at any point we keep track of more ranges, old ranges are discarded.
+const MaxNumAckRanges = 500
 
 // MinPacingDelay is the minimum duration that is used for packet pacing
 // If the packet packing frequency is higher, multiple packets might be sent at once.

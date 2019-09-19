@@ -31,7 +31,7 @@ var _ = Describe("Client", func() {
 	BeforeEach(func() {
 		origDialAddr = dialAddr
 		hostname := "quic.clemente.io:1337"
-		client = newClient(hostname, nil, &roundTripperOpts{}, nil, nil)
+		client = newClient(hostname, nil, &roundTripperOpts{MaxHeaderBytes: 1337}, nil, nil)
 		Expect(client.hostname).To(Equal(hostname))
 
 		var err error
@@ -85,13 +85,15 @@ var _ = Describe("Client", func() {
 		) (quic.Session, error) {
 			Expect(hostname).To(Equal("localhost:1337"))
 			Expect(tlsConfP.ServerName).To(Equal(tlsConf.ServerName))
-			Expect(tlsConfP.NextProtos).To(Equal([]string{"proto foo", "proto bar", nextProtoH3}))
+			Expect(tlsConfP.NextProtos).To(Equal([]string{nextProtoH3}))
 			Expect(quicConfP.IdleTimeout).To(Equal(quicConf.IdleTimeout))
 			dialAddrCalled = true
 			return nil, errors.New("test done")
 		}
 		client.RoundTrip(req)
 		Expect(dialAddrCalled).To(BeTrue())
+		// make sure the original tls.Config was not modified
+		Expect(tlsConf.NextProtos).To(Equal([]string{"proto foo", "proto bar"}))
 	})
 
 	It("uses the custom dialer, if provided", func() {
@@ -102,7 +104,7 @@ var _ = Describe("Client", func() {
 		dialer := func(network, address string, tlsConfP *tls.Config, quicConfP *quic.Config) (quic.Session, error) {
 			Expect(network).To(Equal("udp"))
 			Expect(address).To(Equal("localhost:1337"))
-			Expect(tlsConfP).To(Equal(tlsConf))
+			Expect(tlsConfP.ServerName).To(Equal("foo.bar"))
 			Expect(quicConfP.IdleTimeout).To(Equal(quicConf.IdleTimeout))
 			dialerCalled = true
 			return nil, testErr
@@ -179,23 +181,6 @@ var _ = Describe("Client", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("sends a request", func() {
-			sess.EXPECT().OpenStreamSync(context.Background()).Return(str, nil)
-			buf := &bytes.Buffer{}
-			str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
-				return buf.Write(p)
-			})
-			str.EXPECT().Close()
-			str.EXPECT().Read(gomock.Any()).Return(0, errors.New("test done"))
-			_, err := client.RoundTrip(request)
-			Expect(err).To(MatchError("test done"))
-			hfs := decodeHeader(buf)
-			Expect(hfs).To(HaveKeyWithValue(":scheme", "https"))
-			Expect(hfs).To(HaveKeyWithValue(":method", "GET"))
-			Expect(hfs).To(HaveKeyWithValue(":authority", "quic.clemente.io:1337"))
-			Expect(hfs).To(HaveKeyWithValue(":path", "/file1.dat"))
-		})
-
 		It("returns a response", func() {
 			rspBuf := &bytes.Buffer{}
 			rw := newResponseWriter(rspBuf, utils.DefaultLogger)
@@ -248,7 +233,10 @@ var _ = Describe("Client", func() {
 
 			It("sends a request", func() {
 				done := make(chan struct{})
-				str.EXPECT().Close().Do(func() { close(done) })
+				gomock.InOrder(
+					str.EXPECT().Close().Do(func() { close(done) }),
+					str.EXPECT().CancelWrite(gomock.Any()).MaxTimes(1), // when reading the response errors
+				)
 				// the response body is sent asynchronously, while already reading the response
 				str.EXPECT().Read(gomock.Any()).DoAndReturn(func([]byte) (int, error) {
 					<-done
@@ -264,9 +252,13 @@ var _ = Describe("Client", func() {
 			It("returns the error that occurred when reading the body", func() {
 				request.Body.(*mockBody).readErr = errors.New("testErr")
 				done := make(chan struct{})
-				str.EXPECT().CancelWrite(quic.ErrorCode(errorRequestCanceled)).Do(func(quic.ErrorCode) {
-					close(done)
-				})
+				gomock.InOrder(
+					str.EXPECT().CancelWrite(quic.ErrorCode(errorRequestCanceled)).Do(func(quic.ErrorCode) {
+						close(done)
+					}),
+					str.EXPECT().CancelWrite(gomock.Any()),
+				)
+
 				// the response body is sent asynchronously, while already reading the response
 				str.EXPECT().Read(gomock.Any()).DoAndReturn(func([]byte) (int, error) {
 					<-done
@@ -274,6 +266,86 @@ var _ = Describe("Client", func() {
 				})
 				_, err := client.RoundTrip(request)
 				Expect(err).To(MatchError("test done"))
+			})
+
+			It("closes the connection when the first frame is not a HEADERS frame", func() {
+				buf := &bytes.Buffer{}
+				(&dataFrame{Length: 0x42}).Write(buf)
+				sess.EXPECT().CloseWithError(quic.ErrorCode(errorUnexpectedFrame), gomock.Any())
+				str.EXPECT().Close().MaxTimes(1)
+				str.EXPECT().Read(gomock.Any()).DoAndReturn(func(b []byte) (int, error) {
+					return buf.Read(b)
+				}).AnyTimes()
+				_, err := client.RoundTrip(request)
+				Expect(err).To(MatchError("expected first frame to be a HEADERS frame"))
+			})
+
+			It("cancels the stream when the HEADERS frame is too large", func() {
+				buf := &bytes.Buffer{}
+				(&headersFrame{Length: 1338}).Write(buf)
+				str.EXPECT().CancelWrite(quic.ErrorCode(errorFrameError))
+				str.EXPECT().Close().MaxTimes(1)
+				str.EXPECT().Read(gomock.Any()).DoAndReturn(func(b []byte) (int, error) {
+					return buf.Read(b)
+				}).AnyTimes()
+				_, err := client.RoundTrip(request)
+				Expect(err).To(MatchError("HEADERS frame too large: 1338 bytes (max: 1337)"))
+			})
+		})
+
+		Context("request cancellations", func() {
+			It("cancels a request while the request is still in flight", func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				req := request.WithContext(ctx)
+				sess.EXPECT().OpenStreamSync(context.Background()).Return(str, nil)
+				buf := &bytes.Buffer{}
+				str.EXPECT().Close().MaxTimes(1)
+
+				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
+					return buf.Write(p)
+				})
+
+				done := make(chan struct{})
+				canceled := make(chan struct{})
+				gomock.InOrder(
+					str.EXPECT().CancelWrite(quic.ErrorCode(errorRequestCanceled)).Do(func(quic.ErrorCode) { close(canceled) }),
+					str.EXPECT().CancelWrite(gomock.Any()).MaxTimes(1).Do(func(quic.ErrorCode) { close(done) }),
+				)
+				str.EXPECT().CancelRead(quic.ErrorCode(errorRequestCanceled))
+				str.EXPECT().Read(gomock.Any()).DoAndReturn(func([]byte) (int, error) {
+					cancel()
+					<-canceled
+					return 0, errors.New("test done")
+				})
+				_, err := client.RoundTrip(req)
+				Expect(err).To(MatchError("test done"))
+				Eventually(done).Should(BeClosed())
+			})
+
+			It("cancels a request after the response arrived", func() {
+				rspBuf := &bytes.Buffer{}
+				rw := newResponseWriter(rspBuf, utils.DefaultLogger)
+				rw.WriteHeader(418)
+
+				ctx, cancel := context.WithCancel(context.Background())
+				req := request.WithContext(ctx)
+				sess.EXPECT().OpenStreamSync(context.Background()).Return(str, nil)
+				buf := &bytes.Buffer{}
+				str.EXPECT().Close().MaxTimes(1)
+
+				done := make(chan struct{})
+				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
+					return buf.Write(p)
+				})
+				str.EXPECT().Read(gomock.Any()).DoAndReturn(func(b []byte) (int, error) {
+					return rspBuf.Read(b)
+				}).AnyTimes()
+				str.EXPECT().CancelWrite(quic.ErrorCode(errorRequestCanceled))
+				str.EXPECT().CancelRead(quic.ErrorCode(errorRequestCanceled)).Do(func(quic.ErrorCode) { close(done) })
+				_, err := client.RoundTrip(req)
+				Expect(err).ToNot(HaveOccurred())
+				cancel()
+				Eventually(done).Should(BeClosed())
 			})
 		})
 
@@ -301,7 +373,10 @@ var _ = Describe("Client", func() {
 				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
 					return buf.Write(p)
 				})
-				str.EXPECT().Close()
+				gomock.InOrder(
+					str.EXPECT().Close(),
+					str.EXPECT().CancelWrite(gomock.Any()).MaxTimes(1), // when the Read errors
+				)
 				str.EXPECT().Read(gomock.Any()).Return(0, errors.New("test done"))
 				_, err := client.RoundTrip(request)
 				Expect(err).To(MatchError("test done"))
@@ -316,7 +391,10 @@ var _ = Describe("Client", func() {
 				str.EXPECT().Write(gomock.Any()).DoAndReturn(func(p []byte) (int, error) {
 					return buf.Write(p)
 				})
-				str.EXPECT().Close()
+				gomock.InOrder(
+					str.EXPECT().Close(),
+					str.EXPECT().CancelWrite(gomock.Any()).MaxTimes(1), // when the Read errors
+				)
 				str.EXPECT().Read(gomock.Any()).Return(0, errors.New("test done"))
 				_, err := client.RoundTrip(request)
 				Expect(err).To(MatchError("test done"))

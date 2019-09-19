@@ -149,6 +149,7 @@ var _ = Describe("Client", func() {
 				remoteAddrChan <- conn.RemoteAddr().String()
 				sess := NewMockQuicSession(mockCtrl)
 				sess.EXPECT().run()
+				sess.EXPECT().HandshakeComplete().Return(context.Background())
 				return sess, nil
 			}
 			_, err := DialAddr("localhost:17890", tlsConf, &Config{HandshakeTimeout: time.Millisecond})
@@ -179,6 +180,7 @@ var _ = Describe("Client", func() {
 				hostnameChan <- tlsConf.ServerName
 				sess := NewMockQuicSession(mockCtrl)
 				sess.EXPECT().run()
+				sess.EXPECT().HandshakeComplete().Return(context.Background())
 				return sess, nil
 			}
 			tlsConf.ServerName = "foobar"
@@ -208,6 +210,7 @@ var _ = Describe("Client", func() {
 			) (quicSession, error) {
 				hostnameChan <- tlsConf.ServerName
 				sess := NewMockQuicSession(mockCtrl)
+				sess.EXPECT().HandshakeComplete().Return(context.Background())
 				sess.EXPECT().run()
 				return sess, nil
 			}
@@ -243,7 +246,9 @@ var _ = Describe("Client", func() {
 			) (quicSession, error) {
 				sess := NewMockQuicSession(mockCtrl)
 				sess.EXPECT().run().Do(func() { close(run) })
-				runner.OnHandshakeComplete(sess)
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				sess.EXPECT().HandshakeComplete().Return(ctx)
 				return sess, nil
 			}
 			s, err := Dial(
@@ -258,7 +263,7 @@ var _ = Describe("Client", func() {
 			Eventually(run).Should(BeClosed())
 		})
 
-		It("returns an error that occurs while waiting for the connection to become secure", func() {
+		It("returns an error that occurs while waiting for the handshake to complete", func() {
 			manager := NewMockPacketHandlerManager(mockCtrl)
 			manager.EXPECT().Add(gomock.Any(), gomock.Any())
 			mockMultiplexer.EXPECT().AddConn(packetConn, gomock.Any(), gomock.Any()).Return(manager, nil)
@@ -279,6 +284,7 @@ var _ = Describe("Client", func() {
 			) (quicSession, error) {
 				sess := NewMockQuicSession(mockCtrl)
 				sess.EXPECT().run().Return(testErr)
+				sess.EXPECT().HandshakeComplete().Return(context.Background())
 				return sess, nil
 			}
 			packetConn.dataToRead <- acceptClientVersionPacket(cl.srcConnID)
@@ -303,6 +309,7 @@ var _ = Describe("Client", func() {
 			sess.EXPECT().run().Do(func() {
 				<-sessionRunning
 			})
+			sess.EXPECT().HandshakeComplete().Return(context.Background())
 			newClientSession = func(
 				_ connection,
 				_ sessionRunner,
@@ -366,6 +373,7 @@ var _ = Describe("Client", func() {
 			sess.EXPECT().run().Do(func() {
 				runner.Retire(connID)
 			})
+			sess.EXPECT().HandshakeComplete().Return(context.Background())
 
 			_, err := DialContext(
 				context.Background(),
@@ -411,6 +419,7 @@ var _ = Describe("Client", func() {
 			sess.EXPECT().run().Do(func() {
 				<-run
 			})
+			sess.EXPECT().HandshakeComplete().Return(context.Background())
 
 			done := make(chan struct{})
 			go func() {
@@ -435,6 +444,7 @@ var _ = Describe("Client", func() {
 		Context("quic.Config", func() {
 			It("setups with the right values", func() {
 				tracer := quictrace.NewTracer()
+				tokenStore := NewLRUTokenStore(10, 4)
 				config := &Config{
 					HandshakeTimeout:      1337 * time.Minute,
 					IdleTimeout:           42 * time.Hour,
@@ -443,6 +453,7 @@ var _ = Describe("Client", func() {
 					ConnectionIDLength:    13,
 					StatelessResetKey:     []byte("foobar"),
 					QuicTracer:            tracer,
+					TokenStore:            tokenStore,
 				}
 				c := populateClientConfig(config, false)
 				Expect(c.HandshakeTimeout).To(Equal(1337 * time.Minute))
@@ -452,6 +463,7 @@ var _ = Describe("Client", func() {
 				Expect(c.ConnectionIDLength).To(Equal(13))
 				Expect(c.StatelessResetKey).To(Equal([]byte("foobar")))
 				Expect(c.QuicTracer).To(Equal(tracer))
+				Expect(c.TokenStore).To(Equal(tokenStore))
 			})
 
 			It("errors when the Config contains an invalid version", func() {
@@ -461,11 +473,6 @@ var _ = Describe("Client", func() {
 				version := protocol.VersionNumber(0x1234)
 				_, err := Dial(packetConn, nil, "localhost:1234", tlsConf, &Config{Versions: []protocol.VersionNumber{version}})
 				Expect(err).To(MatchError("0x1234 is not a valid QUIC version"))
-			})
-
-			It("erros when the tls.Config doesn't contain NextProtos", func() {
-				_, err := Dial(packetConn, nil, "localhost:1234", &tls.Config{}, nil)
-				Expect(err).To(MatchError("quic: NextProtos not set in tls.Config"))
 			})
 
 			It("disables bidirectional streams", func() {
@@ -502,7 +509,7 @@ var _ = Describe("Client", func() {
 			})
 		})
 
-		It("creates new TLS sessions with the right parameters", func() {
+		It("creates new sessions with the right parameters", func() {
 			manager := NewMockPacketHandlerManager(mockCtrl)
 			manager.EXPECT().Add(connID, gomock.Any())
 			mockMultiplexer.EXPECT().AddConn(packetConn, gomock.Any(), gomock.Any()).Return(manager, nil)
@@ -532,6 +539,7 @@ var _ = Describe("Client", func() {
 				// TODO: check connection IDs?
 				sess := NewMockQuicSession(mockCtrl)
 				sess.EXPECT().run()
+				sess.EXPECT().HandshakeComplete().Return(context.Background())
 				return sess, nil
 			}
 			_, err := Dial(packetConn, addr, "localhost:1337", tlsConf, config)
@@ -576,6 +584,7 @@ var _ = Describe("Client", func() {
 					Expect(conn.Write([]byte("0 fake CHLO"))).To(Succeed())
 					sess := NewMockQuicSession(mockCtrl)
 					sess.EXPECT().run().Return(testErr)
+					sess.EXPECT().HandshakeComplete().Return(context.Background())
 					return sess, nil
 				}
 				_, err := Dial(
@@ -606,6 +615,8 @@ var _ = Describe("Client", func() {
 				Eventually(cl.versionNegotiated.Get).Should(BeTrue())
 			})
 
+			// Illustrates that adversary that injects a version negotiation packet
+			// with no supported versions can break a connection.
 			It("errors if no matching version is found", func() {
 				sess := NewMockQuicSession(mockCtrl)
 				done := make(chan struct{})
@@ -667,5 +678,35 @@ var _ = Describe("Client", func() {
 	It("tells its version", func() {
 		Expect(cl.version).ToNot(BeZero())
 		Expect(cl.GetVersion()).To(Equal(cl.version))
+	})
+
+	Context("handling potentially injected packets", func() {
+		// NOTE: We hope these tests as written will fail once mitigations for injection adversaries are put in place.
+
+		// Illustrates that adversary who injects any packet quickly can
+		// cause a real version negotiation packet to be ignored.
+		It("version negotiation packets ignored if any other packet is received", func() {
+			// Copy of existing test "recognizes that a non Version Negotiation packet means that the server accepted the suggested version"
+			sess := NewMockQuicSession(mockCtrl)
+			sess.EXPECT().handlePacket(gomock.Any())
+			cl.session = sess
+			cl.config = &Config{}
+			buf := &bytes.Buffer{}
+			Expect((&wire.ExtendedHeader{
+				Header: wire.Header{
+					DestConnectionID: connID,
+					SrcConnectionID:  connID,
+					Version:          cl.version,
+				},
+				PacketNumberLen: protocol.PacketNumberLen3,
+			}).Write(buf, protocol.VersionTLS)).To(Succeed())
+			cl.handlePacket(&receivedPacket{data: buf.Bytes()})
+
+			// Version negotiation is now ignored
+			cl.config = &Config{}
+			ver := cl.version
+			cl.handlePacket(composeVersionNegotiationPacket(connID, []protocol.VersionNumber{1234}))
+			Expect(cl.version).To(Equal(ver))
+		})
 	})
 })
