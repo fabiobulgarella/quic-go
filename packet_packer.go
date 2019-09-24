@@ -156,21 +156,21 @@ type packetPacker struct {
 	numNonAckElicitingAcks int
 
 	// spin bit, delay sample, and packet loss bits related fields
-	spinBit             bool
-	spinEdge            bool
+	spinBit  bool
+	spinEdge bool
 
-	delaySample         bool
-	gotDelaySample      bool
-	skipDelaySample     bool
-	forceDelaySample    bool
-	lastDelaySample     time.Time
+	delaySample      bool
+	gotDelaySample   bool
+	skipDelaySample  bool
+	forceDelaySample bool
+	lastDelaySample  time.Time
 
-	lossPause           bool
-	reflectionPhase     bool
-	genPacketCounter    uint
-	rflPacketCounter    uint
-	rflCounterLock      bool
-	freeLastSpinPeriod  bool
+	lossPause          bool
+	reflectionPhase    bool
+	genPacketCounter   uint
+	rflPacketCounter   uint
+	rflCounterLock     bool
+	freeLastSpinPeriod bool
 }
 
 var _ packer = &packetPacker{}
@@ -202,9 +202,10 @@ func newPacketPacker(
 		acks:                acks,
 		pnManager:           packetNumberManager,
 		maxPacketSize:       getMaxPacketSize(remoteAddr),
-		lossPause:       true,
-		genPacketCounter: 1,
-		freeLastSpinPeriod: true,
+		lossPause:           true,
+		genPacketCounter:    1,
+		freeLastSpinPeriod:  true,
+		rflCounterLock:      true,
 	}
 }
 
