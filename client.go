@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lucas-clemente/quic-go/internal/handshake"
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
@@ -259,10 +258,7 @@ func populateClientConfig(config *Config, createdPacketConn bool) *Config {
 
 func (c *client) dial(ctx context.Context) error {
 	c.logger.Infof("Starting new connection to %s (%s -> %s), source connection ID %s, destination connection ID %s, version %s", c.tlsConf.ServerName, c.conn.LocalAddr(), c.conn.RemoteAddr(), c.srcConnID, c.destConnID, c.version)
-
-	if err := c.createNewTLSSession(c.version); err != nil {
-		return err
-	}
+	c.createNewTLSSession(c.version)
 	err := c.establishSecureConnection(ctx)
 	if err == errCloseForRecreating {
 		return c.dial(ctx)
@@ -357,23 +353,9 @@ func (c *client) handleVersionNegotiationPacket(p *receivedPacket) {
 	c.initialPacketNumber = c.session.closeForRecreating()
 }
 
-func (c *client) createNewTLSSession(_ protocol.VersionNumber) error {
-	params := &handshake.TransportParameters{
-		InitialMaxStreamDataBidiRemote: protocol.InitialMaxStreamData,
-		InitialMaxStreamDataBidiLocal:  protocol.InitialMaxStreamData,
-		InitialMaxStreamDataUni:        protocol.InitialMaxStreamData,
-		InitialMaxData:                 protocol.InitialMaxData,
-		IdleTimeout:                    c.config.IdleTimeout,
-		MaxBidiStreamNum:               protocol.StreamNum(c.config.MaxIncomingStreams),
-		MaxUniStreamNum:                protocol.StreamNum(c.config.MaxIncomingUniStreams),
-		MaxAckDelay:                    protocol.MaxAckDelayInclGranularity,
-		AckDelayExponent:               protocol.AckDelayExponent,
-		DisableMigration:               true,
-	}
-
+func (c *client) createNewTLSSession(_ protocol.VersionNumber) {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	sess, err := newClientSession(
+	c.session = newClientSession(
 		c.conn,
 		c.packetHandlers,
 		c.destConnID,
@@ -381,17 +363,14 @@ func (c *client) createNewTLSSession(_ protocol.VersionNumber) error {
 		c.config,
 		c.tlsConf,
 		c.initialPacketNumber,
-		params,
 		c.initialVersion,
 		c.logger,
 		c.version,
 	)
-	if err != nil {
-		return err
-	}
-	c.session = sess
+	c.mutex.Unlock()
+	// It's not possible to use the stateless reset token for the client's (first) connection ID,
+	// since there's no way to securely communicate it to the server.
 	c.packetHandlers.Add(c.srcConnID, c)
-	return nil
 }
 
 func (c *client) Close() error {

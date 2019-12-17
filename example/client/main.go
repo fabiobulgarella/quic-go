@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"github.com/lucas-clemente/quic-go/http3"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
@@ -31,9 +32,14 @@ func main() {
 	}
 	logger.SetLogTimeFormat("")
 
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		panic(err)
+	}
+	testdata.AddRootCA(pool)
 	roundTripper := &http3.RoundTripper{
 		TLSClientConfig: &tls.Config{
-			RootCAs:            testdata.GetRootCA(),
+			RootCAs:            pool,
 			InsecureSkipVerify: *insecure,
 		},
 	}

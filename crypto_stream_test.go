@@ -55,7 +55,7 @@ var _ = Describe("Crypto Stream", func() {
 				Offset: protocol.MaxCryptoStreamOffset - 5,
 				Data:   []byte("foobar"),
 			})
-			Expect(err).To(MatchError(fmt.Sprintf("received invalid offset %d on crypto stream, maximum allowed %d", protocol.MaxCryptoStreamOffset+1, protocol.MaxCryptoStreamOffset)))
+			Expect(err).To(MatchError(fmt.Sprintf("CRYPTO_BUFFER_EXCEEDED: received invalid offset %d on crypto stream, maximum allowed %d", protocol.MaxCryptoStreamOffset+1, protocol.MaxCryptoStreamOffset)))
 		})
 
 		It("handles messages split over multiple CRYPTO frames", func() {
@@ -119,7 +119,7 @@ var _ = Describe("Crypto Stream", func() {
 				err := str.HandleCryptoFrame(&wire.CryptoFrame{
 					Data: createHandshakeMessage(5),
 				})
-				Expect(err).To(MatchError("received crypto data after change of encryption level"))
+				Expect(err).To(MatchError("PROTOCOL_VIOLATION: received crypto data after change of encryption level"))
 			})
 
 			It("ignores crypto data below the maximum offset received before finishing", func() {

@@ -9,13 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/lucas-clemente/quic-go"
 	mockquic "github.com/lucas-clemente/quic-go/internal/mocks/quic"
-	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/marten-seemann/qpack"
@@ -119,7 +117,7 @@ var _ = Describe("Server", func() {
 				return len(p), nil
 			}).AnyTimes()
 
-			Expect(s.handleRequest(str, qpackDecoder)).To(Equal(requestError{}))
+			Expect(s.handleRequest(str, qpackDecoder, nil)).To(Equal(requestError{}))
 			var req *http.Request
 			Eventually(requestChan).Should(Receive(&req))
 			Expect(req.Host).To(Equal("www.example.com"))
@@ -135,7 +133,7 @@ var _ = Describe("Server", func() {
 				return responseBuf.Write(p)
 			}).AnyTimes()
 
-			serr := s.handleRequest(str, qpackDecoder)
+			serr := s.handleRequest(str, qpackDecoder, nil)
 			Expect(serr.err).ToNot(HaveOccurred())
 			hfs := decodeHeader(responseBuf)
 			Expect(hfs).To(HaveKeyWithValue(":status", []string{"200"}))
@@ -154,7 +152,7 @@ var _ = Describe("Server", func() {
 			}).AnyTimes()
 			str.EXPECT().CancelRead(gomock.Any())
 
-			serr := s.handleRequest(str, qpackDecoder)
+			serr := s.handleRequest(str, qpackDecoder, nil)
 			Expect(serr.err).ToNot(HaveOccurred())
 			hfs := decodeHeader(responseBuf)
 			Expect(hfs).To(HaveKeyWithValue(":status", []string{"500"}))
@@ -250,7 +248,7 @@ var _ = Describe("Server", func() {
 
 				done := make(chan struct{})
 				sess.EXPECT().CloseWithError(gomock.Any(), gomock.Any()).Do(func(code quic.ErrorCode, _ string) {
-					Expect(code).To(Equal(quic.ErrorCode(errorUnexpectedFrame)))
+					Expect(code).To(Equal(quic.ErrorCode(errorFrameUnexpected)))
 					close(done)
 				})
 				s.handleConn(sess)
@@ -296,7 +294,7 @@ var _ = Describe("Server", func() {
 			}).AnyTimes()
 			str.EXPECT().CancelRead(quic.ErrorCode(errorEarlyResponse))
 
-			serr := s.handleRequest(str, qpackDecoder)
+			serr := s.handleRequest(str, qpackDecoder, nil)
 			Expect(serr.err).ToNot(HaveOccurred())
 			Eventually(handlerCalled).Should(BeClosed())
 		})
@@ -319,7 +317,7 @@ var _ = Describe("Server", func() {
 			}).AnyTimes()
 			str.EXPECT().CancelRead(quic.ErrorCode(errorEarlyResponse))
 
-			serr := s.handleRequest(str, qpackDecoder)
+			serr := s.handleRequest(str, qpackDecoder, nil)
 			Expect(serr.err).ToNot(HaveOccurred())
 			Eventually(handlerCalled).Should(BeClosed())
 		})
@@ -328,19 +326,15 @@ var _ = Describe("Server", func() {
 	Context("setting http headers", func() {
 		var expected http.Header
 
-		getExpectedHeader := func(versions []protocol.VersionNumber) http.Header {
-			var versionsAsString []string
-			for _, v := range versions {
-				versionsAsString = append(versionsAsString, v.ToAltSvc())
-			}
+		getExpectedHeader := func() http.Header {
 			return http.Header{
-				"Alt-Svc": {fmt.Sprintf(`quic=":443"; ma=2592000; v="%s"`, strings.Join(versionsAsString, ","))},
+				"Alt-Svc": {fmt.Sprintf(`%s=":443"; ma=2592000`, nextProtoH3)},
 			}
 		}
 
 		BeforeEach(func() {
-			Expect(getExpectedHeader([]protocol.VersionNumber{99, 90, 9})).To(Equal(http.Header{"Alt-Svc": {`quic=":443"; ma=2592000; v="99,90,9"`}}))
-			expected = getExpectedHeader(protocol.SupportedVersions)
+			Expect(getExpectedHeader()).To(Equal(http.Header{"Alt-Svc": {nextProtoH3 + `=":443"; ma=2592000`}}))
+			expected = getExpectedHeader()
 		})
 
 		It("sets proper headers with numeric port", func() {
@@ -531,6 +525,31 @@ var _ = Describe("Server", func() {
 			tlsConf := &tls.Config{
 				GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
 					return &tls.Config{NextProtos: []string{"foo", "bar"}}, nil
+				},
+			}
+
+			var receivedConf *tls.Config
+			quicListenAddr = func(addr string, conf *tls.Config, _ *quic.Config) (quic.Listener, error) {
+				receivedConf = conf
+				return nil, errors.New("listen err")
+			}
+			s.TLSConfig = tlsConf
+			Expect(s.ListenAndServe()).To(HaveOccurred())
+			// check that the config used by QUIC uses the h3 ALPN
+			conf, err := receivedConf.GetConfigForClient(&tls.ClientHelloInfo{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(conf.NextProtos).To(Equal([]string{nextProtoH3}))
+			// check that the original config was not modified
+			conf, err = tlsConf.GetConfigForClient(&tls.ClientHelloInfo{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(conf.NextProtos).To(Equal([]string{"foo", "bar"}))
+		})
+
+		It("sets the ALPN for tls.Configs returned by the tls.GetConfigForClient, if it returns a static tls.Config", func() {
+			tlsClientConf := &tls.Config{NextProtos: []string{"foo", "bar"}}
+			tlsConf := &tls.Config{
+				GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
+					return tlsClientConf, nil
 				},
 			}
 

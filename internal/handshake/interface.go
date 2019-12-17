@@ -11,10 +11,10 @@ import (
 )
 
 var (
-	// ErrOpenerNotYetAvailable is returned when an opener is requested for an encryption level,
+	// ErrKeysNotYetAvailable is returned when an opener or a sealer is requested for an encryption level,
 	// but the corresponding opener has not yet been initialized
 	// This can happen when packets arrive out of order.
-	ErrOpenerNotYetAvailable = errors.New("CryptoSetup: opener at this encryption level not yet available")
+	ErrKeysNotYetAvailable = errors.New("CryptoSetup: keys at this encryption level not yet available")
 	// ErrKeysDropped is returned when an opener or a sealer is requested for an encryption level,
 	// but the corresponding keys have already been dropped.
 	ErrKeysDropped = errors.New("CryptoSetup: keys were already dropped")
@@ -69,7 +69,7 @@ type handshakeRunner interface {
 type CryptoSetup interface {
 	RunHandshake()
 	io.Closer
-	ChangeConnectionID(protocol.ConnectionID) error
+	ChangeConnectionID(protocol.ConnectionID)
 
 	HandleMessage([]byte, protocol.EncryptionLevel) bool
 	SetLargest1RTTAcked(protocol.PacketNumber)

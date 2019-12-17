@@ -20,9 +20,8 @@ const (
 	FinalSizeError          ErrorCode = 0x6
 	FrameEncodingError      ErrorCode = 0x7
 	TransportParameterError ErrorCode = 0x8
-	VersionNegotiationError ErrorCode = 0x9
 	ProtocolViolation       ErrorCode = 0xa
-	InvalidMigration        ErrorCode = 0xc
+	CryptoBufferExceeded    ErrorCode = 0xd
 )
 
 func (e ErrorCode) isCryptoError() bool {
@@ -31,9 +30,18 @@ func (e ErrorCode) isCryptoError() bool {
 
 func (e ErrorCode) Error() string {
 	if e.isCryptoError() {
-		return fmt.Sprintf("%s: %s", e.String(), qtls.Alert(e-0x100).Error())
+		return fmt.Sprintf("%s: %s", e.String(), e.Message())
 	}
 	return e.String()
+}
+
+// Message is a description of the error.
+// It only returns a non-empty string for crypto errors.
+func (e ErrorCode) Message() string {
+	if !e.isCryptoError() {
+		return ""
+	}
+	return qtls.Alert(e - 0x100).Error()
 }
 
 func (e ErrorCode) String() string {
@@ -56,12 +64,10 @@ func (e ErrorCode) String() string {
 		return "FRAME_ENCODING_ERROR"
 	case TransportParameterError:
 		return "TRANSPORT_PARAMETER_ERROR"
-	case VersionNegotiationError:
-		return "VERSION_NEGOTIATION_ERROR"
 	case ProtocolViolation:
 		return "PROTOCOL_VIOLATION"
-	case InvalidMigration:
-		return "INVALID_MIGRATION"
+	case CryptoBufferExceeded:
+		return "CRYPTO_BUFFER_EXCEEDED"
 	default:
 		if e.isCryptoError() {
 			return "CRYPTO_ERROR"

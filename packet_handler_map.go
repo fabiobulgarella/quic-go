@@ -35,6 +35,7 @@ type packetHandlerMap struct {
 	deleteRetiredSessionsAfter time.Duration
 
 	statelessResetEnabled bool
+	statelessResetMutex   sync.Mutex
 	statelessResetHasher  hash.Hash
 
 	logger utils.Logger
@@ -60,45 +61,82 @@ func newPacketHandlerMap(
 		logger:                     logger,
 	}
 	go m.listen()
+
+	if logger.Debug() {
+		go m.logUsage()
+	}
+
 	return m
 }
 
-func (h *packetHandlerMap) Add(id protocol.ConnectionID, handler packetHandler) {
-	h.mutex.Lock()
-	h.addLocked(id, handler)
-	h.mutex.Unlock()
+func (h *packetHandlerMap) logUsage() {
+	ticker := time.NewTicker(2 * time.Second)
+	var printedZero bool
+	for {
+		select {
+		case <-h.listening:
+			return
+		case <-ticker.C:
+		}
+
+		h.mutex.Lock()
+		numHandlers := len(h.handlers)
+		numTokens := len(h.resetTokens)
+		h.mutex.Unlock()
+		// If the number tracked handlers and tokens is zero, only print it a single time.
+		hasZero := numHandlers == 0 && numTokens == 0
+		if !hasZero || (hasZero && !printedZero) {
+			h.logger.Debugf("Tracking %d connection IDs and %d reset tokens.\n", numHandlers, numTokens)
+			printedZero = false
+			if hasZero {
+				printedZero = true
+			}
+		}
+	}
 }
 
-func (h *packetHandlerMap) addLocked(id protocol.ConnectionID, handler packetHandler) {
+func (h *packetHandlerMap) Add(id protocol.ConnectionID, handler packetHandler) [16]byte {
+	h.mutex.Lock()
 	h.handlers[string(id)] = handler
+	h.mutex.Unlock()
+	return h.GetStatelessResetToken(id)
+}
+
+func (h *packetHandlerMap) AddIfNotTaken(id protocol.ConnectionID, handler packetHandler) bool /* was added */ {
+	sid := string(id)
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+
+	if _, ok := h.handlers[sid]; !ok {
+		h.handlers[sid] = handler
+		return true
+	}
+	return false
 }
 
 func (h *packetHandlerMap) Remove(id protocol.ConnectionID) {
 	h.mutex.Lock()
-	h.removeByConnectionIDAsString(string(id))
+	delete(h.handlers, string(id))
 	h.mutex.Unlock()
+}
+
+func (h *packetHandlerMap) Retire(id protocol.ConnectionID) {
+	time.AfterFunc(h.deleteRetiredSessionsAfter, func() {
+		h.mutex.Lock()
+		delete(h.handlers, string(id))
+		h.mutex.Unlock()
+	})
 }
 
 func (h *packetHandlerMap) ReplaceWithClosed(id protocol.ConnectionID, handler packetHandler) {
 	h.mutex.Lock()
-	h.removeByConnectionIDAsString(string(id))
-	h.addLocked(id, handler)
+	h.handlers[string(id)] = handler
 	h.mutex.Unlock()
-	h.retireByConnectionIDAsString(string(id))
-}
 
-func (h *packetHandlerMap) removeByConnectionIDAsString(id string) {
-	delete(h.handlers, id)
-}
-
-func (h *packetHandlerMap) Retire(id protocol.ConnectionID) {
-	h.retireByConnectionIDAsString(string(id))
-}
-
-func (h *packetHandlerMap) retireByConnectionIDAsString(id string) {
 	time.AfterFunc(h.deleteRetiredSessionsAfter, func() {
 		h.mutex.Lock()
-		h.removeByConnectionIDAsString(id)
+		handler.Close()
+		delete(h.handlers, string(id))
 		h.mutex.Unlock()
 	})
 }
@@ -113,6 +151,14 @@ func (h *packetHandlerMap) RemoveResetToken(token [16]byte) {
 	h.mutex.Lock()
 	delete(h.resetTokens, token)
 	h.mutex.Unlock()
+}
+
+func (h *packetHandlerMap) RetireResetToken(token [16]byte) {
+	time.AfterFunc(h.deleteRetiredSessionsAfter, func() {
+		h.mutex.Lock()
+		delete(h.resetTokens, token)
+		h.mutex.Unlock()
+	})
 }
 
 func (h *packetHandlerMap) SetServer(s unknownPacketHandler) {
@@ -259,9 +305,11 @@ func (h *packetHandlerMap) GetStatelessResetToken(connID protocol.ConnectionID) 
 		rand.Read(token[:])
 		return token
 	}
+	h.statelessResetMutex.Lock()
 	h.statelessResetHasher.Write(connID.Bytes())
 	copy(token[:], h.statelessResetHasher.Sum(nil))
 	h.statelessResetHasher.Reset()
+	h.statelessResetMutex.Unlock()
 	return token
 }
 

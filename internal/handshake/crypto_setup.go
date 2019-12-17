@@ -126,8 +126,8 @@ func NewCryptoSetupClient(
 	tlsConf *tls.Config,
 	rttStats *congestion.RTTStats,
 	logger utils.Logger,
-) (CryptoSetup, <-chan struct{} /* ClientHello written */, error) {
-	cs, clientHelloWritten, err := newCryptoSetup(
+) (CryptoSetup, <-chan struct{} /* ClientHello written */) {
+	cs, clientHelloWritten := newCryptoSetup(
 		initialStream,
 		handshakeStream,
 		oneRTTStream,
@@ -139,11 +139,8 @@ func NewCryptoSetupClient(
 		logger,
 		protocol.PerspectiveClient,
 	)
-	if err != nil {
-		return nil, nil, err
-	}
 	cs.conn = qtls.Client(newConn(remoteAddr), cs.tlsConf)
-	return cs, clientHelloWritten, nil
+	return cs, clientHelloWritten
 }
 
 // NewCryptoSetupServer creates a new crypto setup for the server
@@ -158,8 +155,8 @@ func NewCryptoSetupServer(
 	tlsConf *tls.Config,
 	rttStats *congestion.RTTStats,
 	logger utils.Logger,
-) (CryptoSetup, error) {
-	cs, _, err := newCryptoSetup(
+) CryptoSetup {
+	cs, _ := newCryptoSetup(
 		initialStream,
 		handshakeStream,
 		oneRTTStream,
@@ -171,11 +168,8 @@ func NewCryptoSetupServer(
 		logger,
 		protocol.PerspectiveServer,
 	)
-	if err != nil {
-		return nil, err
-	}
 	cs.conn = qtls.Server(newConn(remoteAddr), cs.tlsConf)
-	return cs, nil
+	return cs
 }
 
 func newCryptoSetup(
@@ -189,11 +183,8 @@ func newCryptoSetup(
 	rttStats *congestion.RTTStats,
 	logger utils.Logger,
 	perspective protocol.Perspective,
-) (*cryptoSetup, <-chan struct{} /* ClientHello written */, error) {
-	initialSealer, initialOpener, err := NewInitialAEAD(connID, perspective)
-	if err != nil {
-		return nil, nil, err
-	}
+) (*cryptoSetup, <-chan struct{} /* ClientHello written */) {
+	initialSealer, initialOpener := NewInitialAEAD(connID, perspective)
 	extHandler := newExtensionHandler(tp.Marshal(), perspective)
 	cs := &cryptoSetup{
 		initialStream:          initialStream,
@@ -219,29 +210,17 @@ func newCryptoSetup(
 	}
 	qtlsConf := tlsConfigToQtlsConfig(tlsConf, cs, extHandler)
 	cs.tlsConf = qtlsConf
-	return cs, cs.clientHelloWrittenChan, nil
+	return cs, cs.clientHelloWrittenChan
 }
 
-func (h *cryptoSetup) ChangeConnectionID(id protocol.ConnectionID) error {
-	initialSealer, initialOpener, err := NewInitialAEAD(id, h.perspective)
-	if err != nil {
-		return err
-	}
+func (h *cryptoSetup) ChangeConnectionID(id protocol.ConnectionID) {
+	initialSealer, initialOpener := NewInitialAEAD(id, h.perspective)
 	h.initialSealer = initialSealer
 	h.initialOpener = initialOpener
-	return nil
 }
 
 func (h *cryptoSetup) SetLargest1RTTAcked(pn protocol.PacketNumber) {
 	h.aead.SetLargestAcked(pn)
-	// drop initial keys
-	// TODO: do this earlier
-	if h.initialOpener != nil {
-		h.initialOpener = nil
-		h.initialSealer = nil
-		h.runner.DropKeys(protocol.EncryptionInitial)
-		h.logger.Debugf("Dropping Initial keys.")
-	}
 	// drop handshake keys
 	if h.handshakeOpener != nil {
 		h.handshakeOpener = nil
@@ -309,14 +288,19 @@ func (h *cryptoSetup) HandleMessage(data []byte, encLevel protocol.EncryptionLev
 	if encLevel == protocol.Encryption1RTT {
 		h.handlePostHandshakeMessage()
 	}
+	var strFinished bool
 	switch h.perspective {
 	case protocol.PerspectiveClient:
-		return h.handleMessageForClient(msgType)
+		strFinished = h.handleMessageForClient(msgType)
 	case protocol.PerspectiveServer:
-		return h.handleMessageForServer(msgType)
+		strFinished = h.handleMessageForServer(msgType)
 	default:
 		panic("")
 	}
+	if strFinished {
+		h.logger.Debugf("Done with encryption level %s.", encLevel)
+	}
+	return strFinished
 }
 
 func (h *cryptoSetup) checkEncryptionLevel(msgType messageType, encLevel protocol.EncryptionLevel) error {
@@ -496,9 +480,11 @@ func (h *cryptoSetup) SetReadKey(encLevel qtls.EncryptionLevel, suite *qtls.Ciph
 	switch encLevel {
 	case qtls.EncryptionHandshake:
 		h.readEncLevel = protocol.EncryptionHandshake
-		h.handshakeOpener = newLongHeaderOpener(
+		h.handshakeOpener = newHandshakeOpener(
 			createAEAD(suite, trafficSecret),
 			newHeaderProtector(suite, trafficSecret, true),
+			h.dropInitialKeys,
+			h.perspective,
 		)
 		h.logger.Debugf("Installed Handshake Read keys (using %s)", cipherSuiteName(suite.ID))
 	case qtls.EncryptionApplication:
@@ -518,9 +504,11 @@ func (h *cryptoSetup) SetWriteKey(encLevel qtls.EncryptionLevel, suite *qtls.Cip
 	switch encLevel {
 	case qtls.EncryptionHandshake:
 		h.writeEncLevel = protocol.EncryptionHandshake
-		h.handshakeSealer = newLongHeaderSealer(
+		h.handshakeSealer = newHandshakeSealer(
 			createAEAD(suite, trafficSecret),
 			newHeaderProtector(suite, trafficSecret, true),
+			h.dropInitialKeys,
+			h.perspective,
 		)
 		h.logger.Debugf("Installed Handshake Write keys (using %s)", cipherSuiteName(suite.ID))
 	case qtls.EncryptionApplication:
@@ -565,6 +553,16 @@ func (h *cryptoSetup) SendAlert(alert uint8) {
 	h.alertChan <- alert
 }
 
+// used a callback in the handshakeSealer and handshakeOpener
+func (h *cryptoSetup) dropInitialKeys() {
+	h.mutex.Lock()
+	h.initialOpener = nil
+	h.initialSealer = nil
+	h.mutex.Unlock()
+	h.runner.DropKeys(protocol.EncryptionInitial)
+	h.logger.Debugf("Dropping Initial keys.")
+}
+
 func (h *cryptoSetup) GetInitialSealer() (LongHeaderSealer, error) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
@@ -583,7 +581,7 @@ func (h *cryptoSetup) GetHandshakeSealer() (LongHeaderSealer, error) {
 		if h.initialSealer == nil {
 			return nil, ErrKeysDropped
 		}
-		return nil, errors.New("CryptoSetup: no sealer with encryption level Handshake")
+		return nil, ErrKeysNotYetAvailable
 	}
 	return h.handshakeSealer, nil
 }
@@ -593,7 +591,7 @@ func (h *cryptoSetup) Get1RTTSealer() (ShortHeaderSealer, error) {
 	defer h.mutex.Unlock()
 
 	if !h.has1RTTSealer {
-		return nil, errors.New("CryptoSetup: no sealer with encryption level 1-RTT")
+		return nil, ErrKeysNotYetAvailable
 	}
 	return h.aead, nil
 }
@@ -614,7 +612,7 @@ func (h *cryptoSetup) GetHandshakeOpener() (LongHeaderOpener, error) {
 
 	if h.handshakeOpener == nil {
 		if h.initialOpener != nil {
-			return nil, ErrOpenerNotYetAvailable
+			return nil, ErrKeysNotYetAvailable
 		}
 		// if the initial opener is also not available, the keys were already dropped
 		return nil, ErrKeysDropped
@@ -627,7 +625,7 @@ func (h *cryptoSetup) Get1RTTOpener() (ShortHeaderOpener, error) {
 	defer h.mutex.Unlock()
 
 	if !h.has1RTTOpener {
-		return nil, ErrOpenerNotYetAvailable
+		return nil, ErrKeysNotYetAvailable
 	}
 	return h.aead, nil
 }

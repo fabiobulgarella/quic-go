@@ -36,18 +36,6 @@ func (m *MockPacker) EXPECT() *MockPackerMockRecorder {
 	return m.recorder
 }
 
-// ChangeDestConnectionID mocks base method
-func (m *MockPacker) ChangeDestConnectionID(arg0 protocol.ConnectionID) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "ChangeDestConnectionID", arg0)
-}
-
-// ChangeDestConnectionID indicates an expected call of ChangeDestConnectionID
-func (mr *MockPackerMockRecorder) ChangeDestConnectionID(arg0 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChangeDestConnectionID", reflect.TypeOf((*MockPacker)(nil).ChangeDestConnectionID), arg0)
-}
-
 // HandleTransportParameters mocks base method
 func (m *MockPacker) HandleTransportParameters(arg0 *handshake.TransportParameters) {
 	m.ctrl.T.Helper()
@@ -73,6 +61,21 @@ func (m *MockPacker) MaybePackAckPacket() (*packedPacket, error) {
 func (mr *MockPackerMockRecorder) MaybePackAckPacket() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MaybePackAckPacket", reflect.TypeOf((*MockPacker)(nil).MaybePackAckPacket))
+}
+
+// MaybePackProbePacket mocks base method
+func (m *MockPacker) MaybePackProbePacket(arg0 protocol.EncryptionLevel) (*packedPacket, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MaybePackProbePacket", arg0)
+	ret0, _ := ret[0].(*packedPacket)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// MaybePackProbePacket indicates an expected call of MaybePackProbePacket
+func (mr *MockPackerMockRecorder) MaybePackProbePacket(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MaybePackProbePacket", reflect.TypeOf((*MockPacker)(nil).MaybePackProbePacket), arg0)
 }
 
 // PackConnectionClose mocks base method

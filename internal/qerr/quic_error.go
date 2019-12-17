@@ -8,6 +8,7 @@ import (
 // A QuicError consists of an error code plus a error reason
 type QuicError struct {
 	ErrorCode          ErrorCode
+	FrameType          uint64 // only valid if this not an application error
 	ErrorMessage       string
 	isTimeout          bool
 	isApplicationError bool
@@ -15,10 +16,23 @@ type QuicError struct {
 
 var _ net.Error = &QuicError{}
 
+// UserCanceledError is used if the application closes the connection
+// before the handshake completes.
+var UserCanceledError = &QuicError{ErrorCode: 0x15a}
+
 // Error creates a new QuicError instance
 func Error(errorCode ErrorCode, errorMessage string) *QuicError {
 	return &QuicError{
 		ErrorCode:    errorCode,
+		ErrorMessage: errorMessage,
+	}
+}
+
+// ErrorWithFrameType creates a new QuicError instance for a specific frame type
+func ErrorWithFrameType(errorCode ErrorCode, frameType uint64, errorMessage string) *QuicError {
+	return &QuicError{
+		ErrorCode:    errorCode,
+		FrameType:    frameType,
 		ErrorMessage: errorMessage,
 	}
 }
@@ -39,6 +53,7 @@ func CryptoError(tlsAlert uint8, errorMessage string) *QuicError {
 	}
 }
 
+// ApplicationError creates a new QuicError instance for an application error
 func ApplicationError(errorCode ErrorCode, errorMessage string) *QuicError {
 	return &QuicError{
 		ErrorCode:          errorCode,
@@ -54,15 +69,28 @@ func (e *QuicError) Error() string {
 		}
 		return fmt.Sprintf("Application error %#x: %s", uint64(e.ErrorCode), e.ErrorMessage)
 	}
-	if len(e.ErrorMessage) == 0 {
-		return e.ErrorCode.Error()
+	str := e.ErrorCode.String()
+	if e.FrameType != 0 {
+		str += fmt.Sprintf(" (frame type: %#x)", e.FrameType)
 	}
-	return fmt.Sprintf("%s: %s", e.ErrorCode.String(), e.ErrorMessage)
+	msg := e.ErrorMessage
+	if len(msg) == 0 {
+		msg = e.ErrorCode.Message()
+	}
+	if len(msg) == 0 {
+		return str
+	}
+	return str + ": " + msg
 }
 
 // IsCryptoError says if this error is a crypto error
 func (e *QuicError) IsCryptoError() bool {
 	return e.ErrorCode.isCryptoError()
+}
+
+// IsApplicationError says if this error is an application error
+func (e *QuicError) IsApplicationError() bool {
+	return e.isApplicationError
 }
 
 // Temporary says if the error is temporary.

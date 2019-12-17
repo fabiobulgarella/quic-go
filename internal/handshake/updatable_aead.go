@@ -99,7 +99,7 @@ func (a *updatableAEAD) rollKeys(now time.Time) {
 	a.numRcvdWithCurrentKey = 0
 	a.numSentWithCurrentKey = 0
 	a.prevRcvAEAD = a.rcvAEAD
-	a.prevRcvAEADExpiry = now.Add(3 * a.rttStats.PTO())
+	a.prevRcvAEADExpiry = now.Add(3 * a.rttStats.PTO(true))
 	a.rcvAEAD = a.nextRcvAEAD
 	a.sendAEAD = a.nextSendAEAD
 
@@ -110,7 +110,7 @@ func (a *updatableAEAD) rollKeys(now time.Time) {
 }
 
 func (a *updatableAEAD) getNextTrafficSecret(hash crypto.Hash, ts []byte) []byte {
-	return qtls.HkdfExpandLabel(hash, ts, []byte{}, "traffic upd", hash.Size())
+	return qtls.HkdfExpandLabel(hash, ts, []byte{}, "quic ku", hash.Size())
 }
 
 // For the client, this function is called before SetWriteKey.

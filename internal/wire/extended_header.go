@@ -27,40 +27,49 @@ type ExtendedHeader struct {
 	PacketNumberLen protocol.PacketNumberLen
 	PacketNumber    protocol.PacketNumber
 
-    // spin bit, delay sample and packet loss related fields
+	parsedLen protocol.ByteCount
+
+	// spin bit, delay sample and packet loss related fields
 	SpinBit     bool
 	DelaySample bool
 	LossBit     bool
 }
 
-func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (*ExtendedHeader, error) {
+func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (bool /* reserved bits valid */, error) {
+	startLen := b.Len()
 	// read the (now unencrypted) first byte
 	var err error
 	h.typeByte, err = b.ReadByte()
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	if _, err := b.Seek(int64(h.ParsedLen())-1, io.SeekCurrent); err != nil {
-		return nil, err
+	if _, err := b.Seek(int64(h.Header.ParsedLen())-1, io.SeekCurrent); err != nil {
+		return false, err
 	}
+	var reservedBitsValid bool
 	if h.IsLongHeader {
-		return h.parseLongHeader(b, v)
+		reservedBitsValid, err = h.parseLongHeader(b, v)
+	} else {
+		reservedBitsValid, err = h.parseShortHeader(b, v)
 	}
-	return h.parseShortHeader(b, v)
+	if err != nil {
+		return false, err
+	}
+	h.parsedLen = protocol.ByteCount(startLen - b.Len())
+	return reservedBitsValid, err
 }
 
-func (h *ExtendedHeader) parseLongHeader(b *bytes.Reader, _ protocol.VersionNumber) (*ExtendedHeader, error) {
+func (h *ExtendedHeader) parseLongHeader(b *bytes.Reader, _ protocol.VersionNumber) (bool /* reserved bits valid */, error) {
 	if err := h.readPacketNumber(b); err != nil {
-		return nil, err
+		return false, err
 	}
-	var err error
 	if h.typeByte&0xc != 0 {
-		err = ErrInvalidReservedBits
+		return false, nil
 	}
-	return h, err
+	return true, nil
 }
 
-func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, _ protocol.VersionNumber) (*ExtendedHeader, error) {
+func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, _ protocol.VersionNumber) (bool /* reserved bits valid */, error) {
 	h.KeyPhase = protocol.KeyPhaseZero
 	if h.typeByte&0x4 > 0 {
 		h.KeyPhase = protocol.KeyPhaseOne
@@ -71,13 +80,12 @@ func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, _ protocol.VersionNum
 	h.LossBit = h.typeByte&0x8 > 0
 
 	if err := h.readPacketNumber(b); err != nil {
-		return nil, err
+		return false, err
 	}
-	var err error
 	if h.typeByte&0x18 != 0 {
-		//err = ErrInvalidReservedBits
+		//return false, nil
 	}
-	return h, err
+	return true, nil
 }
 
 func (h *ExtendedHeader) readPacketNumber(b *bytes.Reader) error {
@@ -205,6 +213,11 @@ func (h *ExtendedHeader) writePacketNumber(b *bytes.Buffer) error {
 		return fmt.Errorf("invalid packet number length: %d", h.PacketNumberLen)
 	}
 	return nil
+}
+
+// ParsedLen returns the number of bytes that were consumed when parsing the header
+func (h *ExtendedHeader) ParsedLen() protocol.ByteCount {
+	return h.parsedLen
 }
 
 // GetLength determines the length of the Header.
