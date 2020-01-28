@@ -179,3 +179,7 @@ func (u *packetUnpacker) unpack(hd headerDecryptor, hdr *wire.Header, data []byt
 	)
 	return extHdr, parseErr
 }
+
+func (u *packetUnpacker) GetLargestRcvdPacketNumber() protocol.PacketNumber {
+	return u.largestRcvdPacketNumber
+}

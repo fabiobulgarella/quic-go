@@ -63,7 +63,7 @@ func (p *aesHeaderProtector) apply(sample []byte, firstByte *byte, hdrBytes []by
 	if p.isLongHeader {
 		*firstByte ^= p.mask[0] & 0xf
 	} else {
-		*firstByte ^= p.mask[0] & 0x1f
+		*firstByte ^= p.mask[0] & 0x7 // changed from 0x1f so loss bits are not encrypted
 	}
 	for i := range hdrBytes {
 		hdrBytes[i] ^= p.mask[i+1]
@@ -111,7 +111,7 @@ func (p *chachaHeaderProtector) apply(sample []byte, firstByte *byte, hdrBytes [
 	if p.isLongHeader {
 		*firstByte ^= p.mask[0] & 0xf
 	} else {
-		*firstByte ^= p.mask[0] & 0x1f
+		*firstByte ^= p.mask[0] & 0x7 // changed from 0x1f so loss bits are not encrypted
 	}
 	for i := range hdrBytes {
 		hdrBytes[i] ^= p.mask[i+1]

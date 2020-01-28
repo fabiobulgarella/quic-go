@@ -25,6 +25,7 @@ import (
 
 type unpacker interface {
 	Unpack(hdr *wire.Header, rcvTime time.Time, data []byte) (*unpackedPacket, error)
+	GetLargestRcvdPacketNumber() protocol.PacketNumber
 }
 
 type streamGetter interface {
@@ -800,6 +801,14 @@ func (s *session) handleUnpackedPacket(packet *unpackedPacket, rcvTime time.Time
 	s.lastPacketReceivedTime = rcvTime
 	s.firstAckElicitingPacketAfterIdleSentTime = time.Time{}
 	s.keepAlivePingSent = false
+
+	// Handle SpinBit and SquareBits
+	if !packet.hdr.IsLongHeader {
+		if packet.packetNumber == s.unpacker.GetLargestRcvdPacketNumber() {
+			s.packer.HandleSpinBit(packet.hdr.SpinBit)
+		}
+		s.packer.HandleIncomingSquareBit(packet.hdr.SquareBit)
+	}
 
 	// Only used for tracing.
 	// If we're not tracing, this slice will always remain empty.

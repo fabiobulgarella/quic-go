@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/wire"
 )
 
+const QPERIOD = uint(64)
+
 type packer interface {
 	PackPacket() (*packedPacket, error)
 	MaybePackProbePacket(protocol.EncryptionLevel) (*packedPacket, error)
@@ -22,6 +25,9 @@ type packer interface {
 
 	HandleTransportParameters(*handshake.TransportParameters)
 	SetToken([]byte)
+
+	HandleSpinBit(bool)
+	HandleIncomingSquareBit(bool)
 }
 
 type sealer interface {
@@ -154,6 +160,18 @@ type packetPacker struct {
 
 	maxPacketSize          protocol.ByteCount
 	numNonAckElicitingAcks int
+
+	// spin bit and square bits related fields
+	spinBit           bool
+	squareBit         bool
+	squareIndex       uint
+	refSquareBit      bool
+	refSquareIndex    uint
+	oSquareBit        bool
+	oSquareMean       uint
+	oSquarePktCounter uint
+	oSquareTotalPkts  uint
+	oSquareCounter    uint
 }
 
 var _ packer = &packetPacker{}
@@ -185,6 +203,7 @@ func newPacketPacker(
 		acks:                acks,
 		pnManager:           packetNumberManager,
 		maxPacketSize:       getMaxPacketSize(remoteAddr),
+		oSquareMean:         QPERIOD,
 	}
 }
 
@@ -561,6 +580,12 @@ func (p *packetPacker) writeAndSealPacket(
 	} else if payload.length < 4-pnLen {
 		paddingLen = 4 - pnLen - payload.length
 	}
+
+	if !header.IsLongHeader {
+		header.SpinBit = p.spinBit
+		header.SquareBit, header.RefSquareBit = p.handleOutgoingSquareBits()
+	}
+
 	return p.writeAndSealPacketWithPadding(header, payload, paddingLen, encLevel, sealer)
 }
 
@@ -633,4 +658,65 @@ func (p *packetPacker) HandleTransportParameters(params *handshake.TransportPara
 	if params.MaxPacketSize != 0 {
 		p.maxPacketSize = utils.MinByteCount(p.maxPacketSize, params.MaxPacketSize)
 	}
+}
+
+func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
+	if p.perspective == protocol.PerspectiveClient {
+		// client -> invert spinBit
+		p.spinBit = !hdrSpinBit
+	} else {
+		// server -> reflect spinBit
+		p.spinBit = hdrSpinBit
+	}
+}
+
+func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
+	if hdrSquareBit != p.oSquareBit {
+		p.oSquareBit = hdrSquareBit
+		p.oSquareTotalPkts += p.oSquarePktCounter
+		p.oSquareCounter++
+		p.oSquareMean = uint(math.Round(float64(p.oSquareTotalPkts) / float64(p.oSquareCounter)))
+		p.oSquarePktCounter = 0
+
+		// DEBUG
+		persp := "CLIENT"
+		if p.perspective == protocol.PerspectiveServer {
+			persp = "SERVER"
+		}
+		if p.oSquareMean != 64 {
+			fmt.Println(persp, "Nuova Media Errata ->", p.oSquareMean)
+		}
+		// END DEBUG
+	}
+	p.oSquarePktCounter++
+}
+
+func (p *packetPacker) handleOutgoingSquareBits() (bool, bool) {
+	// Inverse state of Q bit if square_index > period N (default 64)
+	p.squareIndex++
+	if p.squareIndex > QPERIOD {
+		// DEBUG
+		if p.squareIndex != 65 {
+			fmt.Println("SquareIndex ->", p.squareIndex)
+		}
+		// END DEBUG
+		p.squareIndex = 1
+		p.squareBit = !p.squareBit
+	}
+
+	p.refSquareIndex++
+	if p.refSquareIndex > p.oSquareMean {
+		// DEBUG
+		if p.refSquareIndex != 65 {
+			fmt.Println("RefSquareIndex ->", p.refSquareIndex)
+		}
+		// END DEBUG
+		p.oSquareTotalPkts = 0
+		p.oSquareCounter = 0
+		//p.oSquareMean = QPERIOD
+		p.refSquareIndex = 1
+		p.refSquareBit = !p.refSquareBit
+	}
+
+	return p.squareBit, p.refSquareBit
 }
