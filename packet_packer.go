@@ -168,7 +168,7 @@ type packetPacker struct {
 	refSquareBit      bool
 	refSquareIndex    uint
 	oSquareBit        bool
-	oSquareMean       uint
+	oSquareAverage    uint
 	oSquarePktCounter uint
 	oSquareTotalPkts  uint
 	oSquareCounter    uint
@@ -203,7 +203,7 @@ func newPacketPacker(
 		acks:                acks,
 		pnManager:           packetNumberManager,
 		maxPacketSize:       getMaxPacketSize(remoteAddr),
-		oSquareMean:         QPERIOD,
+		oSquareAverage:      QPERIOD,
 	}
 }
 
@@ -675,18 +675,20 @@ func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
 		p.oSquareBit = hdrSquareBit
 		p.oSquareTotalPkts += p.oSquarePktCounter
 		p.oSquareCounter++
-		p.oSquareMean = uint(math.Round(float64(p.oSquareTotalPkts) / float64(p.oSquareCounter)))
+		p.oSquareAverage = uint(math.Round(float64(p.oSquareTotalPkts) / float64(p.oSquareCounter)))
 		p.oSquarePktCounter = 0
 
-		// DEBUG
-		persp := "CLIENT"
-		if p.perspective == protocol.PerspectiveServer {
-			persp = "SERVER"
-		}
-		if p.oSquareMean != 64 {
-			fmt.Println(persp, "Nuova Media Errata ->", p.oSquareMean)
-		}
-		// END DEBUG
+		/*
+			// DEBUG
+			persp := "CLIENT"
+			if p.perspective == protocol.PerspectiveServer {
+				persp = "SERVER"
+			}
+			if p.oSquareAverage != 64 {
+				fmt.Println(persp, "Nuova Media Errata ->", p.oSquareAverage)
+			}
+			// END DEBUG
+		*/
 	}
 	p.oSquarePktCounter++
 }
@@ -695,25 +697,21 @@ func (p *packetPacker) handleOutgoingSquareBits() (bool, bool) {
 	// Inverse state of Q bit if square_index > period N (default 64)
 	p.squareIndex++
 	if p.squareIndex > QPERIOD {
-		// DEBUG
-		if p.squareIndex != 65 {
-			fmt.Println("SquareIndex ->", p.squareIndex)
-		}
-		// END DEBUG
 		p.squareIndex = 1
 		p.squareBit = !p.squareBit
 	}
 
 	p.refSquareIndex++
-	if p.refSquareIndex > p.oSquareMean {
-		// DEBUG
-		if p.refSquareIndex != 65 {
-			fmt.Println("RefSquareIndex ->", p.refSquareIndex)
-		}
-		// END DEBUG
+	if p.refSquareIndex > p.oSquareAverage {
+		/*
+			// DEBUG
+			if p.refSquareIndex != 65 {
+				fmt.Println("RefSquareIndex ->", p.refSquareIndex)
+			}
+			// END DEBUG
+		*/
 		p.oSquareTotalPkts = 0
 		p.oSquareCounter = 0
-		//p.oSquareMean = QPERIOD
 		p.refSquareIndex = 1
 		p.refSquareBit = !p.refSquareBit
 	}
