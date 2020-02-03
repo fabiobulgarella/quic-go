@@ -54,7 +54,7 @@ type cryptoStreamHandler interface {
 	SetLargest1RTTAcked(protocol.PacketNumber)
 	DropHandshakeKeys()
 	io.Closer
-	ConnectionState() tls.ConnectionState
+	ConnectionState() handshake.ConnectionState
 }
 
 type receivedPacket struct {
@@ -254,7 +254,7 @@ var newSession = func(
 		MaxUniStreamNum:                protocol.StreamNum(s.config.MaxIncomingUniStreams),
 		MaxAckDelay:                    protocol.MaxAckDelayInclGranularity,
 		AckDelayExponent:               protocol.AckDelayExponent,
-		DisableMigration:               true,
+		DisableActiveMigration:         true,
 		StatelessResetToken:            &statelessResetToken,
 		OriginalConnectionID:           origDestConnID,
 		ActiveConnectionIDLimit:        protocol.MaxActiveConnectionIDs,
@@ -357,7 +357,7 @@ var newClientSession = func(
 		MaxUniStreamNum:                protocol.StreamNum(s.config.MaxIncomingUniStreams),
 		MaxAckDelay:                    protocol.MaxAckDelayInclGranularity,
 		AckDelayExponent:               protocol.AckDelayExponent,
-		DisableMigration:               true,
+		DisableActiveMigration:         true,
 		ActiveConnectionIDLimit:        protocol.MaxActiveConnectionIDs,
 	}
 	cs, clientHelloWritten := handshake.NewCryptoSetupClient(
@@ -580,14 +580,14 @@ func (s *session) Context() context.Context {
 	return s.ctx
 }
 
-func (s *session) ConnectionState() tls.ConnectionState {
+func (s *session) ConnectionState() ConnectionState {
 	return s.cryptoStreamHandler.ConnectionState()
 }
 
 // Time when the next keep-alive packet should be sent.
 // It returns a zero time if no keep-alive should be sent.
 func (s *session) nextKeepAliveTime() time.Time {
-	if !s.config.KeepAlive || s.keepAlivePingSent || s.firstAckElicitingPacketAfterIdleSentTime.IsZero() {
+	if !s.config.KeepAlive || s.keepAlivePingSent || !s.firstAckElicitingPacketAfterIdleSentTime.IsZero() {
 		return time.Time{}
 	}
 	return s.lastPacketReceivedTime.Add(s.keepAliveInterval / 2)
@@ -1072,12 +1072,11 @@ func (s *session) closeRemote(e error) {
 	})
 }
 
-// Close the connection. It sends a qerr.NoError.
+// Close the connection. It sends a NO_ERROR transport error.
 // It waits until the run loop has stopped before returning
-func (s *session) Close() error {
+func (s *session) shutdown() {
 	s.closeLocal(nil)
 	<-s.ctx.Done()
-	return nil
 }
 
 func (s *session) CloseWithError(code protocol.ApplicationErrorCode, desc string) error {

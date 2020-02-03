@@ -67,7 +67,7 @@ var _ = Describe("Session", func() {
 		sessionRunner.EXPECT().ReplaceWithClosed(clientDestConnID, gomock.Any()).MaxTimes(1)
 		sessionRunner.EXPECT().ReplaceWithClosed(srcConnID, gomock.Any()).Do(func(_ protocol.ConnectionID, s packetHandler) {
 			Expect(s).To(BeAssignableToTypeOf(&closedLocalSession{}))
-			Expect(s.Close()).To(Succeed())
+			s.shutdown()
 			Eventually(areClosedSessionsRunning).Should(BeFalse())
 		})
 	}
@@ -423,7 +423,7 @@ var _ = Describe("Session", func() {
 				return &packedPacket{raw: []byte("connection close")}, nil
 			})
 			mconn.EXPECT().Write([]byte("connection close"))
-			Expect(sess.Close()).To(Succeed())
+			sess.shutdown()
 			Eventually(areSessionsRunning).Should(BeFalse())
 			Expect(sess.Context().Done()).To(BeClosed())
 		})
@@ -434,8 +434,8 @@ var _ = Describe("Session", func() {
 			cryptoSetup.EXPECT().Close()
 			packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil)
 			mconn.EXPECT().Write(gomock.Any())
-			Expect(sess.Close()).To(Succeed())
-			Expect(sess.Close()).To(Succeed())
+			sess.shutdown()
+			sess.shutdown()
 			Eventually(areSessionsRunning).Should(BeFalse())
 			Expect(sess.Context().Done()).To(BeClosed())
 		})
@@ -527,7 +527,7 @@ var _ = Describe("Session", func() {
 			}()
 			Consistently(returned).ShouldNot(BeClosed())
 			mconn.EXPECT().Write(gomock.Any())
-			sess.Close()
+			sess.shutdown()
 			Eventually(returned).Should(BeClosed())
 		})
 	})
@@ -666,7 +666,7 @@ var _ = Describe("Session", func() {
 			Consistently(runErr).ShouldNot(Receive())
 			// make the go routine return
 			mconn.EXPECT().Write(gomock.Any())
-			sess.Close()
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 
@@ -877,7 +877,7 @@ var _ = Describe("Session", func() {
 			expectReplaceWithClosed()
 			cryptoSetup.EXPECT().Close()
 			mconn.EXPECT().Write(gomock.Any())
-			sess.Close()
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 
@@ -1004,7 +1004,7 @@ var _ = Describe("Session", func() {
 			expectReplaceWithClosed()
 			cryptoSetup.EXPECT().Close()
 			mconn.EXPECT().Write(gomock.Any())
-			Expect(sess.Close()).To(Succeed())
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 
@@ -1118,7 +1118,7 @@ var _ = Describe("Session", func() {
 			packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil)
 			cryptoSetup.EXPECT().Close()
 			mconn.EXPECT().Write(gomock.Any())
-			sess.Close()
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 
@@ -1206,7 +1206,7 @@ var _ = Describe("Session", func() {
 		packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil)
 		cryptoSetup.EXPECT().Close()
 		mconn.EXPECT().Write(gomock.Any())
-		Expect(sess.Close()).To(Succeed())
+		sess.shutdown()
 		Eventually(sess.Context().Done()).Should(BeClosed())
 	})
 
@@ -1259,7 +1259,7 @@ var _ = Describe("Session", func() {
 		packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil)
 		cryptoSetup.EXPECT().Close()
 		mconn.EXPECT().Write(gomock.Any())
-		Expect(sess.Close()).To(Succeed())
+		sess.shutdown()
 		Eventually(sess.Context().Done()).Should(BeClosed())
 	})
 
@@ -1276,7 +1276,7 @@ var _ = Describe("Session", func() {
 		packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil)
 		cryptoSetup.EXPECT().Close()
 		mconn.EXPECT().Write(gomock.Any())
-		Expect(sess.Close()).To(Succeed())
+		sess.shutdown()
 		Eventually(done).Should(BeClosed())
 	})
 
@@ -1326,12 +1326,12 @@ var _ = Describe("Session", func() {
 			streamManager.EXPECT().CloseWithError(gomock.Any())
 			sessionRunner.EXPECT().ReplaceWithClosed(gomock.Any(), gomock.Any()).Do(func(_ protocol.ConnectionID, s packetHandler) {
 				Expect(s).To(BeAssignableToTypeOf(&closedLocalSession{}))
-				Expect(s.Close()).To(Succeed())
+				s.shutdown()
 			}).Times(4) // initial connection ID + initial client dest conn ID + 2 newly issued conn IDs
 			packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil)
 			cryptoSetup.EXPECT().Close()
 			mconn.EXPECT().Write(gomock.Any())
-			Expect(sess.Close()).To(Succeed())
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 	})
@@ -1363,14 +1363,13 @@ var _ = Describe("Session", func() {
 			packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil)
 			cryptoSetup.EXPECT().Close()
 			mconn.EXPECT().Write(gomock.Any())
-			Expect(sess.Close()).To(Succeed())
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 
 		It("sends a PING as a keep-alive after half the idle timeout", func() {
 			setRemoteIdleTimeout(5 * time.Second)
 			sess.lastPacketReceivedTime = time.Now().Add(-5 * time.Second / 2)
-			sess.firstAckElicitingPacketAfterIdleSentTime = time.Now().Add(-5 * time.Second / 2)
 			sent := make(chan struct{})
 			packer.EXPECT().PackPacket().Do(func() (*packedPacket, error) {
 				close(sent)
@@ -1384,7 +1383,6 @@ var _ = Describe("Session", func() {
 			sess.config.MaxIdleTimeout = time.Hour
 			setRemoteIdleTimeout(time.Hour)
 			sess.lastPacketReceivedTime = time.Now().Add(-protocol.MaxKeepAliveInterval).Add(-time.Millisecond)
-			sess.firstAckElicitingPacketAfterIdleSentTime = time.Now().Add(-protocol.MaxKeepAliveInterval).Add(-time.Millisecond)
 			sent := make(chan struct{})
 			packer.EXPECT().PackPacket().Do(func() (*packedPacket, error) {
 				close(sent)
@@ -1477,7 +1475,7 @@ var _ = Describe("Session", func() {
 			expectReplaceWithClosed()
 			cryptoSetup.EXPECT().Close()
 			mconn.EXPECT().Write(gomock.Any())
-			Expect(sess.Close()).To(Succeed())
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 
@@ -1521,7 +1519,7 @@ var _ = Describe("Session", func() {
 			expectReplaceWithClosed()
 			cryptoSetup.EXPECT().Close()
 			mconn.EXPECT().Write(gomock.Any())
-			sess.Close()
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 	})
@@ -1625,7 +1623,7 @@ var _ = Describe("Client Session", func() {
 
 	expectReplaceWithClosed := func() {
 		sessionRunner.EXPECT().ReplaceWithClosed(srcConnID, gomock.Any()).Do(func(_ protocol.ConnectionID, s packetHandler) {
-			Expect(s.Close()).To(Succeed())
+			s.shutdown()
 			Eventually(areClosedSessionsRunning).Should(BeFalse())
 		})
 	}
@@ -1695,7 +1693,7 @@ var _ = Describe("Client Session", func() {
 		expectReplaceWithClosed()
 		cryptoSetup.EXPECT().Close()
 		mconn.EXPECT().Write(gomock.Any())
-		Expect(sess.Close()).To(Succeed())
+		sess.shutdown()
 		Eventually(sess.Context().Done()).Should(BeClosed())
 	})
 
@@ -1814,7 +1812,7 @@ var _ = Describe("Client Session", func() {
 			if !closed {
 				sessionRunner.EXPECT().ReplaceWithClosed(gomock.Any(), gomock.Any()).Do(func(_ protocol.ConnectionID, s packetHandler) {
 					Expect(s).To(BeAssignableToTypeOf(&closedLocalSession{}))
-					Expect(s.Close()).To(Succeed())
+					s.shutdown()
 				})
 				packer.EXPECT().PackConnectionClose(gomock.Any()).Return(&packedPacket{}, nil).MaxTimes(1)
 				cryptoSetup.EXPECT().Close()
@@ -1825,7 +1823,7 @@ var _ = Describe("Client Session", func() {
 
 		AfterEach(func() {
 			expectClose()
-			sess.Close()
+			sess.shutdown()
 			Eventually(sess.Context().Done()).Should(BeClosed())
 		})
 

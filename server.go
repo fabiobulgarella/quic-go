@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -22,7 +21,7 @@ import (
 // packetHandler handles packets
 type packetHandler interface {
 	handlePacket(*receivedPacket)
-	io.Closer
+	shutdown()
 	destroy(error)
 	getPerspective() protocol.Perspective
 }
@@ -33,7 +32,7 @@ type unknownPacketHandler interface {
 }
 
 type packetHandlerManager interface {
-	io.Closer
+	Destroy() error
 	SetServer(unknownPacketHandler)
 	CloseServer()
 	sessionRunner
@@ -49,8 +48,8 @@ type quicSession interface {
 	getPerspective() protocol.Perspective
 	run() error
 	destroy(error)
+	shutdown()
 	closeForRecreating() protocol.PacketNumber
-	closeRemote(error)
 }
 
 // A Listener of QUIC
@@ -145,7 +144,6 @@ func ListenEarly(conn net.PacketConn, tlsConf *tls.Config, config *Config) (Earl
 	if err != nil {
 		return nil, err
 	}
-	s.acceptEarlySessions = true
 	return &earlyServer{s}, nil
 }
 
@@ -305,7 +303,7 @@ func (s *baseServer) Close() error {
 	// If the server was started with ListenAddr, we created the packet conn.
 	// We need to close it in order to make the go routine reading from that conn return.
 	if s.createdPacketConn {
-		err = s.sessionHandler.Close()
+		err = s.sessionHandler.Destroy()
 	}
 	s.closed = true
 	close(s.errorChan)

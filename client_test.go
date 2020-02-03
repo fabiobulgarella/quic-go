@@ -96,7 +96,7 @@ var _ = Describe("Client", func() {
 
 	AfterEach(func() {
 		if s, ok := cl.session.(*session); ok {
-			s.Close()
+			s.shutdown()
 		}
 		Eventually(areSessionsRunning).Should(BeFalse())
 	})
@@ -128,7 +128,7 @@ var _ = Describe("Client", func() {
 
 			manager := NewMockPacketHandlerManager(mockCtrl)
 			manager.EXPECT().Add(gomock.Any(), gomock.Any())
-			manager.EXPECT().Close()
+			manager.EXPECT().Destroy()
 			mockMultiplexer.EXPECT().AddConn(gomock.Any(), gomock.Any(), gomock.Any()).Return(manager, nil)
 
 			remoteAddrChan := make(chan string, 1)
@@ -159,7 +159,7 @@ var _ = Describe("Client", func() {
 		It("uses the tls.Config.ServerName as the hostname, if present", func() {
 			manager := NewMockPacketHandlerManager(mockCtrl)
 			manager.EXPECT().Add(gomock.Any(), gomock.Any())
-			manager.EXPECT().Close()
+			manager.EXPECT().Destroy()
 			mockMultiplexer.EXPECT().AddConn(gomock.Any(), gomock.Any(), gomock.Any()).Return(manager, nil)
 
 			hostnameChan := make(chan string, 1)
@@ -387,7 +387,7 @@ var _ = Describe("Client", func() {
 				close(dialed)
 			}()
 			Consistently(dialed).ShouldNot(BeClosed())
-			sess.EXPECT().Close()
+			sess.EXPECT().shutdown()
 			cancel()
 			Eventually(dialed).Should(BeClosed())
 		})
@@ -440,7 +440,7 @@ var _ = Describe("Client", func() {
 			// check that the connection is not closed
 			Expect(conn.Write([]byte("foobar"))).To(Succeed())
 
-			manager.EXPECT().Close()
+			manager.EXPECT().Destroy()
 			close(run)
 			time.Sleep(50 * time.Millisecond)
 
