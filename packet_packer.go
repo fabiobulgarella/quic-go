@@ -165,6 +165,7 @@ type packetPacker struct {
 	spinBit           bool
 	squareBit         bool
 	squareIndex       uint
+	refEnabled        bool
 	refSquareBit      bool
 	refSquareIndex    uint
 	oSquareBit        bool
@@ -672,6 +673,7 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 
 func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
 	if hdrSquareBit != p.oSquareBit {
+		p.refEnabled = true
 		p.oSquareBit = hdrSquareBit
 		p.oSquareTotalPkts += p.oSquarePktCounter
 		p.oSquareCounter++
@@ -701,19 +703,21 @@ func (p *packetPacker) handleOutgoingSquareBits() (bool, bool) {
 		p.squareBit = !p.squareBit
 	}
 
-	p.refSquareIndex++
-	if p.refSquareIndex > p.oSquareAverage {
-		/*
-			// DEBUG
-			if p.refSquareIndex != 65 {
-				fmt.Println("RefSquareIndex ->", p.refSquareIndex)
-			}
-			// END DEBUG
-		*/
-		p.oSquareTotalPkts = 0
-		p.oSquareCounter = 0
-		p.refSquareIndex = 1
-		p.refSquareBit = !p.refSquareBit
+	if p.refEnabled {
+		p.refSquareIndex++
+		if p.refSquareIndex > p.oSquareAverage {
+			/*
+				// DEBUG
+				if p.refSquareIndex != 65 {
+					fmt.Println("RefSquareIndex ->", p.refSquareIndex)
+				}
+				// END DEBUG
+			*/
+			p.oSquareTotalPkts = 0
+			p.oSquareCounter = 0
+			p.refSquareIndex = 1
+			p.refSquareBit = !p.refSquareBit
+		}
 	}
 
 	return p.squareBit, p.refSquareBit
