@@ -680,18 +680,6 @@ func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
 		p.oSquareCounter++
 		p.oSquareAverage = uint(math.Round(float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation))
 		p.oSquarePktCounter = 0
-		fmt.Println("Nuova Media ->", p.oSquareAverage) // DEBUG
-		/*
-			// DEBUG
-			persp := "CLIENT"
-			if p.perspective == protocol.PerspectiveServer {
-				persp = "SERVER"
-			}
-			if p.oSquareAverage != 64 {
-				fmt.Println(persp, "Nuova Media Errata ->", p.oSquareAverage)
-			}
-			// END DEBUG
-		*/
 	}
 	p.oSquarePktCounter++
 }
@@ -707,17 +695,9 @@ func (p *packetPacker) handleOutgoingSquareBits() (bool, bool) {
 	if p.refEnabled {
 		p.refSquareIndex++
 		if p.refSquareIndex > p.oSquareAverage {
-			/*
-				// DEBUG
-				if p.refSquareIndex != 65 {
-					fmt.Println("RefSquareIndex ->", p.refSquareIndex)
-				}
-				// END DEBUG
-			*/
 			if p.oSquareCounter != 0 {
 				p.oSquareDeviation = float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation - float64(p.oSquareAverage)
 			}
-			//fmt.Println("Nuova Deviazione ->", p.oSquareDeviation) // DEBUG
 			p.oSquareTotalPkts = 0
 			p.oSquareCounter = 0
 			p.refSquareIndex = 1
