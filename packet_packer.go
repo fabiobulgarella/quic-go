@@ -173,6 +173,7 @@ type packetPacker struct {
 	oSquarePktCounter uint
 	oSquareTotalPkts  uint
 	oSquareCounter    uint
+	oSquareDeviation  float64
 }
 
 var _ packer = &packetPacker{}
@@ -677,9 +678,9 @@ func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
 		p.oSquareBit = hdrSquareBit
 		p.oSquareTotalPkts += p.oSquarePktCounter
 		p.oSquareCounter++
-		p.oSquareAverage = uint(math.Round(float64(p.oSquareTotalPkts) / float64(p.oSquareCounter)))
+		p.oSquareAverage = uint(math.Round(float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation))
 		p.oSquarePktCounter = 0
-
+		fmt.Println("Nuova Media ->", p.oSquareAverage) // DEBUG
 		/*
 			// DEBUG
 			persp := "CLIENT"
@@ -713,6 +714,10 @@ func (p *packetPacker) handleOutgoingSquareBits() (bool, bool) {
 				}
 				// END DEBUG
 			*/
+			if p.oSquareCounter != 0 {
+				p.oSquareDeviation = float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation - float64(p.oSquareAverage)
+			}
+			//fmt.Println("Nuova Deviazione ->", p.oSquareDeviation) // DEBUG
 			p.oSquareTotalPkts = 0
 			p.oSquareCounter = 0
 			p.refSquareIndex = 1
