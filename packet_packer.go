@@ -27,7 +27,7 @@ type packer interface {
 	SetToken([]byte)
 
 	HandleSpinBit(bool)
-	HandleIncomingSquareBit(bool)
+	HandleIncomingSquareBit(bool, bool)
 }
 
 type sealer interface {
@@ -672,8 +672,8 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 	}
 }
 
-func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
-	if hdrSquareBit != p.oSquareBit {
+func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool, notReordered bool) {
+	if hdrSquareBit != p.oSquareBit && notReordered {
 		p.refEnabled = true
 		p.oSquareBit = hdrSquareBit
 		p.oSquareTotalPkts += p.oSquarePktCounter

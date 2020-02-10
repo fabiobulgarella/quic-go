@@ -806,8 +806,10 @@ func (s *session) handleUnpackedPacket(packet *unpackedPacket, rcvTime time.Time
 	if !packet.hdr.IsLongHeader {
 		if packet.packetNumber == s.unpacker.GetLargestRcvdPacketNumber() {
 			s.packer.HandleSpinBit(packet.hdr.SpinBit)
+			s.packer.HandleIncomingSquareBit(packet.hdr.SquareBit, true)
+		} else {
+			s.packer.HandleIncomingSquareBit(packet.hdr.SquareBit, false)
 		}
-		s.packer.HandleIncomingSquareBit(packet.hdr.SquareBit)
 	}
 
 	// Only used for tracing.
