@@ -15,6 +15,10 @@ import (
 	"github.com/lucas-clemente/quic-go"
 )
 
+// MethodGet0RTT allows a GET request to be sent using 0-RTT.
+// Note that 0-RTT data doesn't provide replay protection.
+const MethodGet0RTT = "GET_0RTT"
+
 // RoundTripper performs HTTP/0.9 roundtrips over QUIC.
 type RoundTripper struct {
 	mutex sync.Mutex
@@ -30,7 +34,7 @@ var _ http.RoundTripper = &RoundTripper{}
 // RoundTrip performs a HTTP/0.9 request.
 // It only supports GET requests.
 func (r *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Method != http.MethodGet {
+	if req.Method != http.MethodGet && req.Method != MethodGet0RTT {
 		return nil, errors.New("only GET requests supported")
 	}
 
@@ -62,10 +66,11 @@ func (r *RoundTripper) Close() error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	for _, c := range r.clients {
+	for id, c := range r.clients {
 		if err := c.Close(); err != nil {
 			return err
 		}
+		delete(r.clients, id)
 	}
 	return nil
 }
@@ -76,16 +81,19 @@ type client struct {
 	quicConf *quic.Config
 
 	once    sync.Once
-	sess    quic.Session
+	sess    quic.EarlySession
 	dialErr error
 }
 
 func (c *client) RoundTrip(req *http.Request) (*http.Response, error) {
 	c.once.Do(func() {
-		c.sess, c.dialErr = quic.DialAddr(c.hostname, c.tlsConf, c.quicConf)
+		c.sess, c.dialErr = quic.DialAddrEarly(c.hostname, c.tlsConf, c.quicConf)
 	})
 	if c.dialErr != nil {
 		return nil, c.dialErr
+	}
+	if req.Method != MethodGet0RTT {
+		<-c.sess.HandshakeComplete().Done()
 	}
 	return c.doRequest(req)
 }

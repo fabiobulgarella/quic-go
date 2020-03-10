@@ -15,14 +15,11 @@ var _ = Describe("Send Queue", func() {
 		q = newSendQueue(c)
 	})
 
-	getPacket := func(b []byte) *packedPacket {
+	getPacket := func(b []byte) *packetBuffer {
 		buf := getPacketBuffer()
-		buf.Slice = buf.Slice[:len(b)]
-		copy(buf.Slice, b)
-		return &packedPacket{
-			buffer: buf,
-			raw:    buf.Slice,
-		}
+		buf.Data = buf.Data[:len(b)]
+		copy(buf.Data, b)
+		return buf
 	}
 
 	It("sends a packet", func() {
@@ -30,7 +27,7 @@ var _ = Describe("Send Queue", func() {
 		q.Send(p)
 
 		written := make(chan struct{})
-		c.EXPECT().Write(p.raw).Do(func([]byte) { close(written) })
+		c.EXPECT().Write([]byte("foobar")).Do(func([]byte) { close(written) })
 		done := make(chan struct{})
 		go func() {
 			defer GinkgoRecover()
@@ -69,5 +66,31 @@ var _ = Describe("Send Queue", func() {
 		Eventually(written).Should(Receive(Equal([]byte("raboof"))))
 		q.Close()
 		Eventually(done).Should(BeClosed())
+	})
+
+	It("blocks Close() until the packet has been sent out", func() {
+		written := make(chan []byte)
+		c.EXPECT().Write(gomock.Any()).Do(func(p []byte) { written <- p })
+		done := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			q.Run()
+			close(done)
+		}()
+
+		q.Send(getPacket([]byte("foobar")))
+
+		closed := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			q.Close()
+			close(closed)
+		}()
+
+		Consistently(closed).ShouldNot(BeClosed())
+		// now write the packet
+		Expect(written).To(Receive())
+		Eventually(done).Should(BeClosed())
+		Eventually(closed).Should(BeClosed())
 	})
 })

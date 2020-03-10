@@ -64,20 +64,6 @@ func (mr *MockSentPacketHandlerMockRecorder) GetLossDetectionTimeout() *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLossDetectionTimeout", reflect.TypeOf((*MockSentPacketHandler)(nil).GetLossDetectionTimeout))
 }
 
-// GetLowestPacketNotConfirmedAcked mocks base method
-func (m *MockSentPacketHandler) GetLowestPacketNotConfirmedAcked() protocol.PacketNumber {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetLowestPacketNotConfirmedAcked")
-	ret0, _ := ret[0].(protocol.PacketNumber)
-	return ret0
-}
-
-// GetLowestPacketNotConfirmedAcked indicates an expected call of GetLowestPacketNotConfirmedAcked
-func (mr *MockSentPacketHandlerMockRecorder) GetLowestPacketNotConfirmedAcked() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLowestPacketNotConfirmedAcked", reflect.TypeOf((*MockSentPacketHandler)(nil).GetLowestPacketNotConfirmedAcked))
-}
-
 // GetStats mocks base method
 func (m *MockSentPacketHandler) GetStats() *quictrace.TransportState {
 	m.ctrl.T.Helper()
@@ -150,17 +136,17 @@ func (mr *MockSentPacketHandlerMockRecorder) QueueProbePacket(arg0 interface{}) 
 }
 
 // ReceivedAck mocks base method
-func (m *MockSentPacketHandler) ReceivedAck(arg0 *wire.AckFrame, arg1 protocol.PacketNumber, arg2 protocol.EncryptionLevel, arg3 time.Time) error {
+func (m *MockSentPacketHandler) ReceivedAck(arg0 *wire.AckFrame, arg1 protocol.EncryptionLevel, arg2 time.Time) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReceivedAck", arg0, arg1, arg2, arg3)
+	ret := m.ctrl.Call(m, "ReceivedAck", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // ReceivedAck indicates an expected call of ReceivedAck
-func (mr *MockSentPacketHandlerMockRecorder) ReceivedAck(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
+func (mr *MockSentPacketHandlerMockRecorder) ReceivedAck(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReceivedAck", reflect.TypeOf((*MockSentPacketHandler)(nil).ReceivedAck), arg0, arg1, arg2, arg3)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReceivedAck", reflect.TypeOf((*MockSentPacketHandler)(nil).ReceivedAck), arg0, arg1, arg2)
 }
 
 // ResetForRetry mocks base method

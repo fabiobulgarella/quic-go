@@ -108,6 +108,7 @@ var _ = Describe("Server", func() {
 			sess = mockquic.NewMockEarlySession(mockCtrl)
 			addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1337}
 			sess.EXPECT().RemoteAddr().Return(addr).AnyTimes()
+			sess.EXPECT().LocalAddr().AnyTimes()
 		})
 
 		It("calls the HTTP handler function", func() {
@@ -127,6 +128,7 @@ var _ = Describe("Server", func() {
 			Eventually(requestChan).Should(Receive(&req))
 			Expect(req.Host).To(Equal("www.example.com"))
 			Expect(req.RemoteAddr).To(Equal("127.0.0.1:1337"))
+			Expect(req.Context().Value(ServerContextKey)).To(Equal(s))
 		})
 
 		It("returns 200 with an empty handler", func() {
@@ -176,6 +178,7 @@ var _ = Describe("Server", func() {
 				sess.EXPECT().AcceptStream(gomock.Any()).Return(str, nil)
 				sess.EXPECT().AcceptStream(gomock.Any()).Return(nil, errors.New("done"))
 				sess.EXPECT().RemoteAddr().Return(addr).AnyTimes()
+				sess.EXPECT().LocalAddr().AnyTimes()
 			})
 
 			It("cancels reading when client sends a body in GET request", func() {
@@ -434,17 +437,13 @@ var _ = Describe("Server", func() {
 		It("serves two packet conns", func() {
 			ln1 := mockquic.NewMockEarlyListener(mockCtrl)
 			ln2 := mockquic.NewMockEarlyListener(mockCtrl)
-			lns := []quic.EarlyListener{ln1, ln2}
+			lns := make(chan quic.EarlyListener, 2)
+			lns <- ln1
+			lns <- ln2
 			conn1 := &net.UDPConn{}
 			conn2 := &net.UDPConn{}
-			conns := []net.PacketConn{conn1, conn2}
 			quicListen = func(c net.PacketConn, tlsConf *tls.Config, config *quic.Config) (quic.EarlyListener, error) {
-				conn := conns[0]
-				conns = conns[1:]
-				ln := lns[0]
-				lns = lns[1:]
-				Expect(c).To(Equal(conn))
-				return ln, nil
+				return <-lns, nil
 			}
 
 			s := &Server{Server: &http.Server{}}

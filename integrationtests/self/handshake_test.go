@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"time"
 
@@ -134,6 +135,48 @@ var _ = Describe("Handshake tests", func() {
 			})
 		})
 	}
+
+	Context("using different cipher suites", func() {
+		for n, id := range map[string]uint16{
+			"TLS_AES_128_GCM_SHA256":       tls.TLS_AES_128_GCM_SHA256,
+			"TLS_AES_256_GCM_SHA384":       tls.TLS_AES_256_GCM_SHA384,
+			"TLS_CHACHA20_POLY1305_SHA256": tls.TLS_CHACHA20_POLY1305_SHA256,
+		} {
+			name := n
+			suiteID := id
+
+			It(fmt.Sprintf("using %s", name), func() {
+				tlsServerConf.CipherSuites = []uint16{suiteID}
+				ln, err := quic.ListenAddr("localhost:0", tlsServerConf, serverConfig)
+				Expect(err).ToNot(HaveOccurred())
+
+				go func() {
+					defer GinkgoRecover()
+					sess, err := ln.Accept(context.Background())
+					Expect(err).ToNot(HaveOccurred())
+					str, err := sess.OpenStream()
+					Expect(err).ToNot(HaveOccurred())
+					defer str.Close()
+					_, err = str.Write(PRData)
+					Expect(err).ToNot(HaveOccurred())
+				}()
+
+				sess, err := quic.DialAddr(
+					fmt.Sprintf("localhost:%d", ln.Addr().(*net.UDPAddr).Port),
+					getTLSClientConfig(),
+					nil,
+				)
+				Expect(err).ToNot(HaveOccurred())
+				str, err := sess.AcceptStream(context.Background())
+				Expect(err).ToNot(HaveOccurred())
+				data, err := ioutil.ReadAll(str)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(data).To(Equal(PRData))
+				Expect(sess.ConnectionState().CipherSuite).To(Equal(suiteID))
+				Expect(sess.CloseWithError(0, "")).To(Succeed())
+			})
+		}
+	})
 
 	Context("Certifiate validation", func() {
 		for _, v := range protocol.SupportedVersions {
@@ -411,5 +454,31 @@ var _ = Describe("Handshake tests", func() {
 
 			Eventually(done).Should(BeClosed())
 		})
+	})
+
+	It("rejects invalid Retry token with the INVALID_TOKEN error", func() {
+		tokenChan := make(chan *quic.Token, 10)
+		serverConfig.AcceptToken = func(addr net.Addr, token *quic.Token) bool {
+			tokenChan <- token
+			return false
+		}
+
+		server, err := quic.ListenAddr("localhost:0", getTLSConfig(), serverConfig)
+		Expect(err).ToNot(HaveOccurred())
+		defer server.Close()
+
+		_, err = quic.DialAddr(
+			fmt.Sprintf("localhost:%d", server.Addr().(*net.UDPAddr).Port),
+			getTLSClientConfig(),
+			nil,
+		)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("INVALID_TOKEN"))
+		Expect(tokenChan).To(HaveLen(2))
+		token := <-tokenChan
+		Expect(token).To(BeNil())
+		token = <-tokenChan
+		Expect(token).ToNot(BeNil())
+		Expect(token.IsRetryToken).To(BeTrue())
 	})
 })

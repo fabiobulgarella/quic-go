@@ -95,23 +95,17 @@ func (h *packetHandlerMap) logUsage() {
 	}
 }
 
-func (h *packetHandlerMap) Add(id protocol.ConnectionID, handler packetHandler) [16]byte {
-	h.mutex.Lock()
-	h.handlers[string(id)] = handler
-	h.mutex.Unlock()
-	return h.GetStatelessResetToken(id)
-}
-
-func (h *packetHandlerMap) AddIfNotTaken(id protocol.ConnectionID, handler packetHandler) bool /* was added */ {
+func (h *packetHandlerMap) Add(id protocol.ConnectionID, handler packetHandler) bool /* was added */ {
 	sid := string(id)
+
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
-	if _, ok := h.handlers[sid]; !ok {
-		h.handlers[sid] = handler
-		return true
+	if _, ok := h.handlers[sid]; ok {
+		return false
 	}
-	return false
+	h.handlers[sid] = handler
+	return true
 }
 
 func (h *packetHandlerMap) Remove(id protocol.ConnectionID) {
@@ -224,7 +218,7 @@ func (h *packetHandlerMap) listen() {
 	defer close(h.listening)
 	for {
 		buffer := getPacketBuffer()
-		data := buffer.Slice
+		data := buffer.Data[:protocol.MaxReceivePacketSize]
 		// The packet size should not exceed protocol.MaxReceivePacketSize bytes
 		// If it does, we only read a truncated packet, which will then end up undecryptable
 		n, addr, err := h.conn.ReadFrom(data)
@@ -290,7 +284,7 @@ func (h *packetHandlerMap) maybeHandleStatelessReset(data []byte) bool {
 	var token [16]byte
 	copy(token[:], data[len(data)-16:])
 	if sess, ok := h.resetTokens[token]; ok {
-		h.logger.Debugf("Received a stateless retry with token %#x. Closing session.", token)
+		h.logger.Debugf("Received a stateless reset with token %#x. Closing session.", token)
 		go sess.destroy(errors.New("received a stateless reset"))
 		return true
 	}

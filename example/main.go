@@ -197,6 +197,7 @@ func main() {
 	www := flag.String("www", "", "www data")
 	tcp := flag.Bool("tcp", false, "also listen on TCP")
 	trace := flag.Bool("trace", false, "enable quic-trace")
+	qlog := flag.Bool("qlog", false, "output a qlog (in the same directory)")
 	flag.Parse()
 
 	logger := utils.DefaultLogger
@@ -213,9 +214,20 @@ func main() {
 	}
 
 	handler := setupHandler(*www, *trace)
-	var quicConf *quic.Config
+	quicConf := &quic.Config{}
 	if *trace {
-		quicConf = &quic.Config{QuicTracer: tracer}
+		quicConf.QuicTracer = tracer
+	}
+	if *qlog {
+		quicConf.GetLogWriter = func(connID []byte) io.WriteCloser {
+			filename := fmt.Sprintf("server_%x.qlog", connID)
+			f, err := os.Create(filename)
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Printf("Creating qlog file %s.\n", filename)
+			return f
+		}
 	}
 
 	var wg sync.WaitGroup

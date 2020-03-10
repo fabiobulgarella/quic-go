@@ -12,6 +12,7 @@ import (
 	"github.com/lucas-clemente/quic-go/http3"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
 	"github.com/lucas-clemente/quic-go/interop/http09"
+	"github.com/lucas-clemente/quic-go/interop/utils"
 )
 
 var tlsConf *tls.Config
@@ -25,24 +26,32 @@ func main() {
 	defer logFile.Close()
 	log.SetOutput(logFile)
 
-	keyLog, err := os.Create("/logs/keylogfile.txt")
+	keyLog, err := utils.GetSSLKeyLog()
 	if err != nil {
-		fmt.Printf("Could not create key log file: %s\n", err.Error())
+		fmt.Printf("Could not create key log: %s\n", err.Error())
 		os.Exit(1)
 	}
-	defer keyLog.Close()
+	if keyLog != nil {
+		defer keyLog.Close()
+	}
 
 	testcase := os.Getenv("TESTCASE")
 
+	getLogWriter, err := utils.GetQLOGWriter()
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
 	// a quic.Config that doesn't do a Retry
 	quicConf := &quic.Config{
-		AcceptToken: func(_ net.Addr, _ *quic.Token) bool { return true },
+		AcceptToken:  func(_ net.Addr, _ *quic.Token) bool { return true },
+		GetLogWriter: getLogWriter,
 	}
 	tlsConf = testdata.GetTLSConfig()
 	tlsConf.KeyLogWriter = keyLog
 
 	switch testcase {
-	case "versionnegotiation", "handshake", "transfer", "resumption", "multiconnect":
+	case "versionnegotiation", "handshake", "transfer", "resumption", "zerortt", "multiconnect":
 		err = runHTTP09Server(quicConf)
 	case "retry":
 		// By default, quic-go performs a Retry on every incoming connection.

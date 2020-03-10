@@ -16,7 +16,7 @@ import (
 	"github.com/lucas-clemente/quic-go"
 )
 
-const h09alpn = "hq-23"
+const h09alpn = "hq-27"
 
 type responseWriter struct {
 	io.Writer
@@ -41,7 +41,7 @@ type Server struct {
 	QuicConfig *quic.Config
 
 	mutex    sync.Mutex
-	listener quic.Listener
+	listener quic.EarlyListener
 }
 
 // Close closes the server.
@@ -69,7 +69,7 @@ func (s *Server) ListenAndServe() error {
 
 	tlsConf := s.TLSConfig.Clone()
 	tlsConf.NextProtos = []string{h09alpn}
-	ln, err := quic.Listen(conn, tlsConf, s.QuicConfig)
+	ln, err := quic.ListenEarly(conn, tlsConf, s.QuicConfig)
 	if err != nil {
 		return err
 	}

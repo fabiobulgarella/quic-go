@@ -5,21 +5,28 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"sync"
+
+	"github.com/lucas-clemente/quic-go"
 	"github.com/lucas-clemente/quic-go/http3"
 	"github.com/lucas-clemente/quic-go/internal/testdata"
 	"github.com/lucas-clemente/quic-go/internal/utils"
-	"io"
-	"log"
+
 	"mime/multipart"
-	"net/http"
 	"strconv"
-	"sync"
 )
 
 func main() {
 	verbose := flag.Bool("v", false, "verbose")
 	quiet := flag.Bool("q", false, "don't print the data")
+	keyLogFile := flag.String("keylog", "", "key log file")
 	insecure := flag.Bool("insecure", false, "skip certificate verification")
+	qlog := flag.Bool("qlog", false, "output a qlog (in the same directory)")
 	post := flag.Bool("p", false, "post data of specified dimension")
 	flag.Parse()
 	urls := flag.Args()
@@ -33,16 +40,41 @@ func main() {
 	}
 	logger.SetLogTimeFormat("")
 
+	var keyLog io.Writer
+	if len(*keyLogFile) > 0 {
+		f, err := os.Create(*keyLogFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+		keyLog = f
+	}
+
 	pool, err := x509.SystemCertPool()
 	if err != nil {
 		log.Fatal(err)
 	}
 	testdata.AddRootCA(pool)
+
+	var qconf quic.Config
+	if *qlog {
+		qconf.GetLogWriter = func(connID []byte) io.WriteCloser {
+			filename := fmt.Sprintf("client_%x.qlog", connID)
+			f, err := os.Create(filename)
+			if err != nil {
+				log.Fatal(err)
+			}
+			log.Printf("Creating qlog file %s.\n", filename)
+			return f
+		}
+	}
 	roundTripper := &http3.RoundTripper{
 		TLSClientConfig: &tls.Config{
 			RootCAs:            pool,
 			InsecureSkipVerify: *insecure,
+			KeyLogWriter:       keyLog,
 		},
+		QuicConfig: &qconf,
 	}
 	defer roundTripper.Close()
 	hclient := &http.Client{
