@@ -18,6 +18,7 @@ import (
 )
 
 const QPERIOD = uint(64)
+const REORDERING_THRESHOLD = 5
 
 type packer interface {
 	PackCoalescedPacket() (*coalescedPacket, error)
@@ -171,18 +172,19 @@ type packetPacker struct {
 	numNonAckElicitingAcks int
 
 	// spin bit and square bits related fields
-	spinBit           bool
-	squareBit         bool
-	squareIndex       uint
-	refEnabled        bool
-	refSquareBit      bool
-	refSquareIndex    uint
-	oSquareBit        bool
-	oSquareAverage    uint
-	oSquarePktCounter uint
-	oSquareTotalPkts  uint
-	oSquareCounter    uint
-	oSquareDeviation  float64
+	spinBit              bool
+	squareBit            bool
+	squareIndex          uint
+	refEnabled           bool
+	refSquareBit         bool
+	refSquareIndex       uint
+	oSquareBit           bool
+	oSquareAverage       uint
+	oSquarePktCounter    uint
+	oSquareTmpPktCounter uint // needed by reordering filter with waiting threshold
+	oSquareTotalPkts     uint
+	oSquareCounter       uint
+	oSquareDeviation     float64
 }
 
 var _ packer = &packetPacker{}
@@ -778,6 +780,7 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 	}
 }
 
+/* VERSION WITH BIGGER SQUARE WAVE REORDERING METHOD
 func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool, notReordered bool) {
 	if hdrSquareBit != p.oSquareBit && notReordered {
 		p.refEnabled = true
@@ -788,6 +791,26 @@ func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool, notReordered b
 		p.oSquarePktCounter = 0
 	}
 	p.oSquarePktCounter++
+}
+*/
+
+// VERSION WITH THRESHOLD REORDERING METHOD -> notReordered parameter not needed
+// check if notReordered can be used to exclude reordered packets seen after threshold completion
+func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool, notReordered bool) {
+	if hdrSquareBit == p.oSquareBit {
+		p.oSquarePktCounter++
+	} else {
+		p.oSquareTmpPktCounter++
+		if p.oSquareTmpPktCounter == REORDERING_THRESHOLD {
+			p.refEnabled = true
+			p.oSquareBit = hdrSquareBit
+			p.oSquareTotalPkts += p.oSquarePktCounter
+			p.oSquareCounter++
+			p.oSquareAverage = uint(math.Round(float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation))
+			p.oSquarePktCounter = REORDERING_THRESHOLD
+			p.oSquareTmpPktCounter = 0
+		}
+	}
 }
 
 func (p *packetPacker) handleOutgoingSquareBits() (bool, bool) {
