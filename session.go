@@ -767,7 +767,7 @@ func (s *session) handleSinglePacket(p *receivedPacket, hdr *wire.Header) bool /
 			// Sealer for this encryption level not yet available.
 			// Try again later.
 			wasQueued = true
-			s.tryQueueingUndecryptablePacket(p)
+			s.tryQueueingUndecryptablePacket(p, hdr)
 		case wire.ErrInvalidReservedBits:
 			s.closeLocal(qerr.Error(qerr.ProtocolViolation, err.Error()))
 		default:
@@ -1124,7 +1124,6 @@ func (s *session) closeForRecreating() protocol.PacketNumber {
 func (s *session) closeRemote(e error) {
 	s.closeOnce.Do(func() {
 		s.logger.Errorf("Peer closed session with error: %s", e)
-		s.logger.Debugf("sending to close chan")
 		s.closeChan <- closeError{err: e, immediate: true, remote: true}
 	})
 }
@@ -1209,7 +1208,7 @@ func (s *session) processTransportParameters(params *handshake.TransportParamete
 	if params.PreferredAddress != nil {
 		s.logger.Debugf("Server sent preferred_address. Retiring the preferred_address connection ID.")
 		// Retire the connection ID.
-		s.framer.QueueControlFrame(&wire.RetireConnectionIDFrame{SequenceNumber: 1})
+		s.connIDManager.AddFromPreferredAddress(params.PreferredAddress.ConnectionID, &params.PreferredAddress.StatelessResetToken)
 	}
 	// On the server side, the early session is ready as soon as we processed
 	// the client's transport parameters.
@@ -1507,12 +1506,15 @@ func (s *session) scheduleSending() {
 	}
 }
 
-func (s *session) tryQueueingUndecryptablePacket(p *receivedPacket) {
+func (s *session) tryQueueingUndecryptablePacket(p *receivedPacket, hdr *wire.Header) {
 	if len(s.undecryptablePackets)+1 > protocol.MaxUndecryptablePackets {
 		s.logger.Infof("Dropping undecryptable packet (%d bytes). Undecryptable packet queue full.", len(p.data))
 		return
 	}
 	s.logger.Infof("Queueing packet (%d bytes) for later decryption", len(p.data))
+	if s.qlogger != nil {
+		s.qlogger.BufferedPacket(p.rcvTime, qlog.PacketTypeFromHeader(hdr))
+	}
 	s.undecryptablePackets = append(s.undecryptablePackets, p)
 }
 
