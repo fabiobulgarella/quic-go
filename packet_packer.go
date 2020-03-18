@@ -395,16 +395,18 @@ func (p *packetPacker) packCoalescedPacket(buffer *packetBuffer) (*coalescedPack
 	}
 
 	// Add a 0-RTT / 1-RTT packet.
-	contents, err = p.maybeAppendAppDataPacket(buffer)
-	if err == handshake.ErrKeysNotYetAvailable {
-		return packet, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if contents != nil {
-		packet.packets = append(packet.packets, contents)
-	}
+	/*
+		contents, err = p.maybeAppendAppDataPacket(buffer)
+		if err == handshake.ErrKeysNotYetAvailable {
+			return packet, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if contents != nil {
+			packet.packets = append(packet.packets, contents)
+		}
+	*/
 	return packet, nil
 }
 
