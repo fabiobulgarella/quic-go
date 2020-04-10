@@ -31,7 +31,7 @@ type packer interface {
 	SetToken([]byte)
 
 	HandleSpinBit(bool)
-	HandleIncomingSquareBit(bool, bool)
+	HandleIncomingSquareBit(bool)
 }
 
 type sealer interface {
@@ -782,23 +782,7 @@ func (p *packetPacker) HandleSpinBit(hdrSpinBit bool) {
 	}
 }
 
-/* VERSION WITH BIGGER SQUARE WAVE REORDERING METHOD
-func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool, notReordered bool) {
-	if hdrSquareBit != p.oSquareBit && notReordered {
-		p.refEnabled = true
-		p.oSquareBit = hdrSquareBit
-		p.oSquareTotalPkts += p.oSquarePktCounter
-		p.oSquareCounter++
-		p.oSquareAverage = uint(math.Round(float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation))
-		p.oSquarePktCounter = 0
-	}
-	p.oSquarePktCounter++
-}
-*/
-
-// VERSION WITH THRESHOLD REORDERING METHOD -> notReordered parameter not needed
-// check if notReordered can be used to exclude reordered packets seen after threshold completion
-func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool, notReordered bool) {
+func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
 	if hdrSquareBit == p.oSquareBit {
 		p.oSquarePktCounter++
 	} else {
