@@ -27,6 +27,8 @@ type packer interface {
 
 	HandleTransportParameters(*wire.TransportParameters)
 	SetToken([]byte)
+
+	HandleIncomingSpinBit(bool)
 }
 
 type sealer interface {
@@ -167,6 +169,8 @@ type packetPacker struct {
 
 	maxPacketSize          protocol.ByteCount
 	numNonAckElicitingAcks int
+
+	spinBit bool
 }
 
 var _ packer = &packetPacker{}
@@ -811,6 +815,8 @@ func (p *packetPacker) appendPacket(buffer *packetBuffer, header *wire.ExtendedH
 	paddingLen += padding
 	if header.IsLongHeader {
 		header.Length = pnLen + protocol.ByteCount(sealer.Overhead()) + payload.length + paddingLen
+	} else {
+		header.SpinBit = p.spinBit
 	}
 
 	hdrOffset := buffer.Len()
@@ -879,5 +885,13 @@ func (p *packetPacker) SetMaxPacketSize(s protocol.ByteCount) {
 func (p *packetPacker) HandleTransportParameters(params *wire.TransportParameters) {
 	if params.MaxUDPPayloadSize != 0 {
 		p.maxPacketSize = utils.MinByteCount(p.maxPacketSize, params.MaxUDPPayloadSize)
+	}
+}
+
+func (p *packetPacker) HandleIncomingSpinBit(hdrSpinBit bool) {
+	if p.perspective == protocol.PerspectiveClient {
+		p.spinBit = !hdrSpinBit
+	} else {
+		p.spinBit = hdrSpinBit
 	}
 }

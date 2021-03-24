@@ -29,6 +29,8 @@ type ExtendedHeader struct {
 	PacketNumber    protocol.PacketNumber
 
 	parsedLen protocol.ByteCount
+
+	SpinBit bool
 }
 
 func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (bool /* reserved bits valid */, error) {
@@ -70,6 +72,8 @@ func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, _ protocol.VersionNum
 	if h.typeByte&0x4 > 0 {
 		h.KeyPhase = protocol.KeyPhaseOne
 	}
+
+	h.SpinBit = h.typeByte&0x20 > 0
 
 	if err := h.readPacketNumber(b); err != nil {
 		return false, err
@@ -170,6 +174,10 @@ func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, _ protocol.VersionNum
 	typeByte := 0x40 | uint8(h.PacketNumberLen-1)
 	if h.KeyPhase == protocol.KeyPhaseOne {
 		typeByte |= byte(1 << 2)
+	}
+
+	if h.SpinBit {
+		typeByte |= 0x20
 	}
 
 	b.WriteByte(typeByte)
