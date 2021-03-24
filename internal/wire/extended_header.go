@@ -29,6 +29,8 @@ type ExtendedHeader struct {
 	PacketNumber    protocol.PacketNumber
 
 	parsedLen protocol.ByteCount
+
+	DelayBit bool
 }
 
 func (h *ExtendedHeader) parse(b *bytes.Reader, v protocol.VersionNumber) (bool /* reserved bits valid */, error) {
@@ -71,10 +73,13 @@ func (h *ExtendedHeader) parseShortHeader(b *bytes.Reader, _ protocol.VersionNum
 		h.KeyPhase = protocol.KeyPhaseOne
 	}
 
+	h.DelayBit = h.typeByte&0x10 > 0
+
 	if err := h.readPacketNumber(b); err != nil {
 		return false, err
 	}
-	if h.typeByte&0x18 != 0 {
+	if h.typeByte&0x8 != 0 {
+		// was: if h.typeByte&0x18 != 0
 		return false, nil
 	}
 	return true, nil
@@ -170,6 +175,10 @@ func (h *ExtendedHeader) writeShortHeader(b *bytes.Buffer, _ protocol.VersionNum
 	typeByte := 0x40 | uint8(h.PacketNumberLen-1)
 	if h.KeyPhase == protocol.KeyPhaseOne {
 		typeByte |= byte(1 << 2)
+	}
+
+	if h.DelayBit {
+		typeByte |= 0x10
 	}
 
 	b.WriteByte(typeByte)

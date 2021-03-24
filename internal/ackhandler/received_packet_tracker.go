@@ -194,3 +194,7 @@ func (h *receivedPacketTracker) GetAlarmTimeout() time.Time { return h.ackAlarm 
 func (h *receivedPacketTracker) IsPotentiallyDuplicate(pn protocol.PacketNumber) bool {
 	return h.packetHistory.IsPotentiallyDuplicate(pn)
 }
+
+func (h *receivedPacketTracker) IsPotentiallyReordered(pn protocol.PacketNumber) bool {
+	return pn < h.largestObserved
+}

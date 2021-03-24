@@ -1142,6 +1142,11 @@ func (s *session) handleUnpackedPacket(
 	s.firstAckElicitingPacketAfterIdleSentTime = time.Time{}
 	s.keepAlivePingSent = false
 
+	// Handle delay bit.
+	if !packet.hdr.IsLongHeader {
+		s.packer.HandleIncomingDelayBit(packet.hdr.DelayBit)
+	}
+
 	// Only used for tracing.
 	// If we're not tracing, this slice will always remain empty.
 	var frames []wire.Frame

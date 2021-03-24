@@ -15,6 +15,11 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/wire"
 )
 
+const (
+	REFLECTION_THRESHOLD = int64(time.Millisecond)
+	MAX_PERIOD = int64(time.Millisecond) * 250
+)
+
 type packer interface {
 	PackCoalescedPacket() (*coalescedPacket, error)
 	PackPacket() (*packedPacket, error)
@@ -27,6 +32,8 @@ type packer interface {
 
 	HandleTransportParameters(*wire.TransportParameters)
 	SetToken([]byte)
+
+	HandleIncomingDelayBit(bool)
 }
 
 type sealer interface {
@@ -167,6 +174,11 @@ type packetPacker struct {
 
 	maxPacketSize          protocol.ByteCount
 	numNonAckElicitingAcks int
+
+	// one-way delay bit related fields
+	delayBitReceived     bool
+	reflectionTimeout    int64
+	periodTimeout        int64
 }
 
 var _ packer = &packetPacker{}
@@ -811,6 +823,8 @@ func (p *packetPacker) appendPacket(buffer *packetBuffer, header *wire.ExtendedH
 	paddingLen += padding
 	if header.IsLongHeader {
 		header.Length = pnLen + protocol.ByteCount(sealer.Overhead()) + payload.length + paddingLen
+	} else {
+		header.DelayBit = p.handleOutgoingDelayBit()
 	}
 
 	hdrOffset := buffer.Len()
@@ -879,5 +893,46 @@ func (p *packetPacker) SetMaxPacketSize(s protocol.ByteCount) {
 func (p *packetPacker) HandleTransportParameters(params *wire.TransportParameters) {
 	if params.MaxUDPPayloadSize != 0 {
 		p.maxPacketSize = utils.MinByteCount(p.maxPacketSize, params.MaxUDPPayloadSize)
+	}
+}
+
+func (p *packetPacker) HandleIncomingDelayBit(hdrDelayBit bool) {
+	if !hdrDelayBit {
+		return
+	}
+	p.delayBitReceived = true
+	p.reflectionTimeout = time.Now().UnixNano() + REFLECTION_THRESHOLD
+}
+
+func (p *packetPacker) handleOutgoingDelayBit() bool {
+	// Server Perspective
+	if p.perspective == protocol.PerspectiveServer {
+		if !p.delayBitReceived {
+			return false
+		}
+		p.delayBitReceived = false
+		now := time.Now().UnixNano()
+		if now <= p.reflectionTimeout {
+			return true
+		}
+		return false
+	}
+
+	// Client Perspective
+	now := time.Now().UnixNano()
+	if now <= p.periodTimeout {
+		if !p.delayBitReceived {
+			return false
+		}
+		p.delayBitReceived = false
+		if now <= p.reflectionTimeout {
+			p.periodTimeout = now + MAX_PERIOD
+			return true
+		}
+		return false
+	} else {
+		p.delayBitReceived = false
+		p.periodTimeout = now + MAX_PERIOD
+		return true
 	}
 }
