@@ -134,3 +134,21 @@ func (h *receivedPacketHandler) IsPotentiallyDuplicate(pn protocol.PacketNumber,
 	}
 	panic("unexpected encryption level")
 }
+
+func (h *receivedPacketHandler) IsPotentiallyReordered(pn protocol.PacketNumber, encLevel protocol.EncryptionLevel) bool {
+	switch encLevel {
+	case protocol.EncryptionInitial:
+		if h.initialPackets != nil {
+			return h.initialPackets.IsPotentiallyReordered(pn)
+		}
+	case protocol.EncryptionHandshake:
+		if h.handshakePackets != nil {
+			return h.handshakePackets.IsPotentiallyReordered(pn)
+		}
+	case protocol.Encryption0RTT, protocol.Encryption1RTT:
+		if h.appDataPackets != nil {
+			return h.appDataPackets.IsPotentiallyReordered(pn)
+		}
+	}
+	panic("unexpected encryption level")
+}

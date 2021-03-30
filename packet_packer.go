@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"time"
 
@@ -14,6 +15,9 @@ import (
 	"github.com/lucas-clemente/quic-go/internal/utils"
 	"github.com/lucas-clemente/quic-go/internal/wire"
 )
+
+const QPERIOD = uint(64)
+const REORDERING_THRESHOLD = 10
 
 type packer interface {
 	PackCoalescedPacket() (*coalescedPacket, error)
@@ -27,6 +31,9 @@ type packer interface {
 
 	HandleTransportParameters(*wire.TransportParameters)
 	SetToken([]byte)
+
+	HandleIncomingSpinBit(bool)
+	HandleIncomingSquareBit(bool)
 }
 
 type sealer interface {
@@ -167,6 +174,20 @@ type packetPacker struct {
 
 	maxPacketSize          protocol.ByteCount
 	numNonAckElicitingAcks int
+
+	spinBit bool
+	squareBit            bool
+	squareIndex          uint
+	refEnabled           bool
+	refSquareBit         bool
+	refSquareIndex       uint
+	oSquareBit           bool
+	oSquareAverage       uint
+	oSquarePktCounter    uint
+	oSquareTmpPktCounter uint // needed by reordering filter with waiting threshold
+	oSquareTotalPkts     uint
+	oSquareCounter       uint
+	oSquareDeviation     float64
 }
 
 var _ packer = &packetPacker{}
@@ -200,6 +221,7 @@ func newPacketPacker(
 		acks:                acks,
 		pnManager:           packetNumberManager,
 		maxPacketSize:       getMaxPacketSize(remoteAddr),
+		oSquareAverage:      QPERIOD,
 	}
 }
 
@@ -811,6 +833,9 @@ func (p *packetPacker) appendPacket(buffer *packetBuffer, header *wire.ExtendedH
 	paddingLen += padding
 	if header.IsLongHeader {
 		header.Length = pnLen + protocol.ByteCount(sealer.Overhead()) + payload.length + paddingLen
+	} else {
+		header.SpinBit = p.spinBit
+		header.SquareBit, header.RefSquareBit = p.handleOutgoingSquareBits()
 	}
 
 	hdrOffset := buffer.Len()
@@ -880,4 +905,53 @@ func (p *packetPacker) HandleTransportParameters(params *wire.TransportParameter
 	if params.MaxUDPPayloadSize != 0 {
 		p.maxPacketSize = utils.MinByteCount(p.maxPacketSize, params.MaxUDPPayloadSize)
 	}
+}
+
+func (p *packetPacker) HandleIncomingSpinBit(hdrSpinBit bool) {
+	if p.perspective == protocol.PerspectiveClient {
+		p.spinBit = !hdrSpinBit
+	} else {
+		p.spinBit = hdrSpinBit
+	}
+}
+
+func (p *packetPacker) HandleIncomingSquareBit(hdrSquareBit bool) {
+	if hdrSquareBit == p.oSquareBit {
+		p.oSquarePktCounter++
+	} else {
+		p.oSquareTmpPktCounter++
+		if p.oSquareTmpPktCounter == REORDERING_THRESHOLD {
+			p.refEnabled = true
+			p.oSquareBit = hdrSquareBit
+			p.oSquareTotalPkts += p.oSquarePktCounter
+			p.oSquareCounter++
+			p.oSquareAverage = uint(math.Round(float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation))
+			p.oSquarePktCounter = REORDERING_THRESHOLD
+			p.oSquareTmpPktCounter = 0
+		}
+	}
+}
+
+func (p *packetPacker) handleOutgoingSquareBits() (bool, bool) {
+	// Inverse state of Q bit if square_index > period N (default 64)
+	p.squareIndex++
+	if p.squareIndex > QPERIOD {
+		p.squareIndex = 1
+		p.squareBit = !p.squareBit
+	}
+
+	if p.refEnabled {
+		p.refSquareIndex++
+		if p.refSquareIndex > p.oSquareAverage {
+			if p.oSquareCounter != 0 {
+				p.oSquareDeviation = float64(p.oSquareTotalPkts)/float64(p.oSquareCounter) + p.oSquareDeviation - float64(p.oSquareAverage)
+			}
+			p.oSquareTotalPkts = 0
+			p.oSquareCounter = 0
+			p.refSquareIndex = 1
+			p.refSquareBit = !p.refSquareBit
+		}
+	}
+
+	return p.squareBit, p.refSquareBit
 }

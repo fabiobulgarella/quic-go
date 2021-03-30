@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/md5"
 	"errors"
 	"flag"
 	"fmt"
@@ -100,11 +99,22 @@ func setupHandler(www string) http.Handler {
 		w.Write(body)
 	})
 
+	mux.HandleFunc("/demo/big/", func(w http.ResponseWriter, r *http.Request) {
+		dim, err := strconv.Atoi(r.URL.Path[len("/demo/big/"):])
+		if err != nil {
+			io.WriteString(w, "<html><body><p>Value not allowed! Insert only integers.</p></body></html>")
+		} else {
+			data := make([]byte, dim*1024*1024)
+			w.Write(data)
+			data = nil
+		}
+	})
+
 	// accept file uploads and return the MD5 of the uploaded file
 	// maximum accepted file size is 1 GB
 	mux.HandleFunc("/demo/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			err := r.ParseMultipartForm(1 << 30) // 1 GB
+			err := r.ParseMultipartForm(1 << 31) // 2 GB
 			if err == nil {
 				var file multipart.File
 				file, _, err = r.FormFile("uploadfile")
@@ -112,10 +122,11 @@ func setupHandler(www string) http.Handler {
 					var size int64
 					if sizeInterface, ok := file.(Size); ok {
 						size = sizeInterface.Size()
-						b := make([]byte, size)
-						file.Read(b)
-						md5 := md5.Sum(b)
-						fmt.Fprintf(w, "%x", md5)
+						//b := make([]byte, size)
+						//file.Read(b)
+						//md5 := md5.Sum(b)
+						//fmt.Fprintf(w, "%x", md5)
+						fmt.Fprintf(w, "Uploaded file size: %d", size) // ADDED
 						return
 					}
 					err = errors.New("couldn't get uploaded file size")

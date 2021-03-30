@@ -1142,6 +1142,14 @@ func (s *session) handleUnpackedPacket(
 	s.firstAckElicitingPacketAfterIdleSentTime = time.Time{}
 	s.keepAlivePingSent = false
 
+	// Handle spin bit and sQaure bit.
+	if !packet.hdr.IsLongHeader {
+		if !s.receivedPacketHandler.IsPotentiallyReordered(packet.packetNumber, packet.encryptionLevel) {
+			s.packer.HandleIncomingSpinBit(packet.hdr.SpinBit)
+		}
+		s.packer.HandleIncomingSquareBit(packet.hdr.SquareBit)
+	}
+
 	// Only used for tracing.
 	// If we're not tracing, this slice will always remain empty.
 	var frames []wire.Frame

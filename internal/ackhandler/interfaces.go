@@ -60,6 +60,7 @@ type sentPacketTracker interface {
 // ReceivedPacketHandler handles ACKs needed to send for incoming packets
 type ReceivedPacketHandler interface {
 	IsPotentiallyDuplicate(protocol.PacketNumber, protocol.EncryptionLevel) bool
+	IsPotentiallyReordered(protocol.PacketNumber, protocol.EncryptionLevel) bool
 	ReceivedPacket(pn protocol.PacketNumber, ecn protocol.ECN, encLevel protocol.EncryptionLevel, rcvTime time.Time, shouldInstigateAck bool) error
 	DropPackets(protocol.EncryptionLevel)
 
